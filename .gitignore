@@ -1,0 +1,30 @@
+# Environment variables (contains sensitive data)
+.env
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Hardhat files
+cache/
+artifacts/
+
+# Build outputs
+dist/
+build/
+coverage/
+
+# System files
+.DS_Store
+*.log
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+*.tmp
+*.bak
+
+# Backup files
+*.backup
+*.bak
