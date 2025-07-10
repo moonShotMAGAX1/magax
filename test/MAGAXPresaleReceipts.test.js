@@ -21,6 +21,13 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     const MAGAXPresaleReceipts = await ethers.getContractFactory("MAGAXPresaleReceipts");
     presaleReceipts = await MAGAXPresaleReceipts.deploy(recorder.address);
     await presaleReceipts.waitForDeployment();
+    
+    // Setup initial stage for testing
+    const stagePrice = ethers.parseUnits("0.001", 6); // 0.001 USDT per MAGAX
+    const stageAllocation = ethers.parseUnits("15000000", 18); // 15M MAGAX tokens (enough for all tests)
+    
+    await presaleReceipts.connect(owner).configureStage(1, stagePrice, stageAllocation);
+    await presaleReceipts.connect(owner).activateStage(1);
   });
 
   describe("Deployment", function () {
@@ -58,7 +65,144 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
   });
 
+  describe("Stage Management", function () {
+    it("Should configure a stage correctly", async function () {
+      const stagePrice = ethers.parseUnits("0.002", 6); // 0.002 USDT per MAGAX
+      const stageAllocation = ethers.parseUnits("500000", 18); // 500k MAGAX tokens
+      
+      await expect(
+        presaleReceipts.connect(owner).configureStage(2, stagePrice, stageAllocation)
+      ).to.emit(presaleReceipts, "StageConfigured")
+        .withArgs(2, stagePrice, stageAllocation);
+      
+      const stageInfo = await presaleReceipts.getStageInfo(2);
+      expect(stageInfo.pricePerToken).to.equal(stagePrice);
+      expect(stageInfo.tokensAllocated).to.equal(stageAllocation);
+      expect(stageInfo.tokensSold).to.equal(0);
+      expect(stageInfo.isActive).to.be.false;
+    });
+
+    it("Should activate a stage and deactivate previous", async function () {
+      const stagePrice = ethers.parseUnits("0.002", 6);
+      const stageAllocation = ethers.parseUnits("500000", 18);
+      
+      await presaleReceipts.connect(owner).configureStage(2, stagePrice, stageAllocation);
+      
+      await expect(
+        presaleReceipts.connect(owner).activateStage(2)
+      ).to.emit(presaleReceipts, "StageDeactivated")
+        .withArgs(1)
+        .and.to.emit(presaleReceipts, "StageActivated")
+        .withArgs(2);
+      
+      expect(await presaleReceipts.currentStage()).to.equal(2);
+      
+      const stage1Info = await presaleReceipts.getStageInfo(1);
+      expect(stage1Info.isActive).to.be.false;
+      
+      const stage2Info = await presaleReceipts.getStageInfo(2);
+      expect(stage2Info.isActive).to.be.true;
+    });
+
+    it("Should return current stage info correctly", async function () {
+      const currentStageInfo = await presaleReceipts.getCurrentStageInfo();
+      expect(currentStageInfo.stage).to.equal(1);
+      expect(currentStageInfo.isActive).to.be.true;
+    });
+
+    it("Should fail to configure invalid stages", async function () {
+      const stagePrice = ethers.parseUnits("0.001", 6);
+      const stageAllocation = ethers.parseUnits("1000000", 18);
+      
+      // Invalid stage numbers
+      await expect(
+        presaleReceipts.connect(owner).configureStage(0, stagePrice, stageAllocation)
+      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidStage");
+      
+      await expect(
+        presaleReceipts.connect(owner).configureStage(51, stagePrice, stageAllocation)
+      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidStage");
+      
+      // Invalid price
+      await expect(
+        presaleReceipts.connect(owner).configureStage(2, 0, stageAllocation)
+      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidPrice");
+      
+      // Invalid allocation
+      await expect(
+        presaleReceipts.connect(owner).configureStage(2, stagePrice, 0)
+      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidAmount");
+    });
+
+    it("Should fail non-admin stage management", async function () {
+      const stagePrice = ethers.parseUnits("0.001", 6);
+      const stageAllocation = ethers.parseUnits("1000000", 18);
+      
+      await expect(
+        presaleReceipts.connect(unauthorized).configureStage(2, stagePrice, stageAllocation)
+      ).to.be.reverted;
+      
+      await expect(
+        presaleReceipts.connect(unauthorized).activateStage(1)
+      ).to.be.reverted;
+    });
+
+    it("Should fail to activate an already active stage", async function () {
+      // Stage 1 is already active from beforeEach
+      await expect(
+        presaleReceipts.connect(owner).activateStage(1)
+      ).to.be.revertedWithCustomError(presaleReceipts, "StageAlreadyActive");
+    });
+  });
+
   describe("Recording Purchases", function () {
+    it("Should record a purchase successfully with stage info", async function () {
+      const usdtAmount = ethers.parseUnits("100", 6);
+      const magaxAmount = ethers.parseUnits("1000", 18);
+
+      const tx = await presaleReceipts.connect(recorder).recordPurchase(buyer1.address, usdtAmount, magaxAmount);
+      const receipt = await tx.wait();
+      
+      // Check event emission with all parameters
+      await expect(tx)
+        .to.emit(presaleReceipts, "PurchaseRecorded")
+        .withArgs(
+          buyer1.address,
+          usdtAmount,
+          magaxAmount,
+          await ethers.provider.getBlock('latest').then(b => b.timestamp),
+          1, // current stage
+          ethers.parseUnits("0.001", 6), // stage price
+          1, // total user purchases
+          true // is new buyer
+        );
+
+      expect(await presaleReceipts.totalUSDT()).to.equal(usdtAmount);
+      expect(await presaleReceipts.totalMAGAX()).to.equal(magaxAmount);
+      expect(await presaleReceipts.totalBuyers()).to.equal(1);
+      expect(await presaleReceipts.purchaseCounter()).to.equal(1);
+      
+      // Check stage tokens sold updated
+      const stageInfo = await presaleReceipts.getStageInfo(1);
+      expect(stageInfo.tokensSold).to.equal(magaxAmount);
+    });
+
+    it("Should fail when trying to purchase with insufficient stage tokens", async function () {
+      // Configure stage 2 with limited allocation and activate it
+      const stagePrice = ethers.parseUnits("0.002", 6);
+      const stageAllocation = ethers.parseUnits("500000", 18); // 500K tokens only
+      
+      await presaleReceipts.connect(owner).configureStage(2, stagePrice, stageAllocation);
+      await presaleReceipts.connect(owner).activateStage(2);
+      
+      const usdtAmount = ethers.parseUnits("100", 6);
+      const excessiveAmount = ethers.parseUnits("600000", 18); // More than stage 2 allocation (500K)
+      
+      await expect(
+        presaleReceipts.connect(recorder).recordPurchase(buyer1.address, usdtAmount, excessiveAmount)
+      ).to.be.revertedWithCustomError(presaleReceipts, "InsufficientStageTokens");
+    });
+
     it("Should record a purchase successfully", async function () {
       const usdtAmount = ethers.parseUnits("100", 6);
       const magaxAmount = ethers.parseUnits("1000", 18);
@@ -93,20 +237,28 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
 
     it("Should enforce total presale limit", async function () {
+      // Create a stage with enough tokens but test USDT limit
+      // Configure a large stage to avoid token limit interference
+      const largeStagePrice = ethers.parseUnits("0.001", 6);
+      const largeStageAllocation = ethers.parseUnits("100000000", 18); // 100M MAGAX tokens
+      
+      await presaleReceipts.connect(owner).configureStage(2, largeStagePrice, largeStageAllocation);
+      await presaleReceipts.connect(owner).activateStage(2);
+      
       // Record purchases totaling more than max (10M USDT total limit)
       // Using max individual purchase amount (1M USDT each)
       const purchaseAmount = ethers.parseUnits("1000000", 6); // 1M USDT (max individual)
-      const magaxAmount = ethers.parseUnits("10000000", 18);
+      const magaxAmount = ethers.parseUnits("1000000", 18); // 1M MAGAX tokens (reasonable amount)
 
-      // Make 10 purchases of 1M each to reach the 10M total limit
+      // Make 10 purchases of 1M USDT each to reach the 10M total limit
       for (let i = 0; i < 10; i++) {
         const buyer = await ethers.getSigners().then(signers => signers[i + 10]); // Use different buyers
         await presaleReceipts.connect(recorder).recordPurchase(buyer.address, purchaseAmount, magaxAmount);
       }
       
-      // Next purchase should fail due to total limit
+      // Next purchase should fail due to total USDT limit
       await expect(
-        presaleReceipts.connect(recorder).recordPurchase(buyer1.address, 1, magaxAmount)
+        presaleReceipts.connect(recorder).recordPurchase(buyer1.address, ethers.parseUnits("1", 6), ethers.parseUnits("1", 18))
       ).to.be.revertedWithCustomError(presaleReceipts, "ExceedsTotalLimit");
 
       expect(await presaleReceipts.totalUSDT()).to.equal(MAX_TOTAL_USDT);
@@ -159,6 +311,21 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       await expect(
         presaleReceipts.connect(recorder).recordPurchase(buyer1.address, ethers.parseUnits("100", 6), ethers.parseUnits("1000", 18))
       ).to.be.reverted;
+    });
+
+    it("Should fail when no stage is active", async function () {
+      // Deploy a fresh contract without any active stage
+      const MAGAXPresaleReceipts = await ethers.getContractFactory("MAGAXPresaleReceipts");
+      const freshContract = await MAGAXPresaleReceipts.deploy(recorder.address);
+      await freshContract.waitForDeployment();
+      
+      const usdtAmount = ethers.parseUnits("100", 6);
+      const magaxAmount = ethers.parseUnits("1000", 18);
+      
+      // Should fail because no stage is active (currentStage = 0)
+      await expect(
+        freshContract.connect(recorder).recordPurchase(buyer1.address, usdtAmount, magaxAmount)
+      ).to.be.revertedWithCustomError(freshContract, "StageNotActive");
     });
   });
 
