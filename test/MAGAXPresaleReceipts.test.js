@@ -468,4 +468,205 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       expect(receipts.length).to.equal(purchases);
     });
   });
+
+  describe("Referral System", function () {
+    beforeEach(async function () {
+      // Stage 1 is already active from main beforeEach, so we don't need to activate it again
+    });
+
+    it("Should record purchase with referral and award bonuses", async function () {
+      const usdtAmount = ethers.parseUnits("1000", 6);  // 1000 USDT
+      const magaxAmount = ethers.parseUnits("1000000", 18); // 1M MAGAX
+      
+      // Record purchase with referral
+      await expect(presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      )).to.emit(presaleReceipts, "ReferralBonusAwarded");
+
+      // Check referrer is set
+      expect(await presaleReceipts.getUserReferrer(buyer1.address)).to.equal(buyer2.address);
+      expect(await presaleReceipts.hasReferrer(buyer1.address)).to.be.true;
+
+      // Check bonuses awarded
+      const [referrerReferrals, referrerBonus] = await presaleReceipts.getReferralInfo(buyer2.address);
+      const [refereeReferrals, refereeBonus] = await presaleReceipts.getReferralInfo(buyer1.address);
+
+      // Referrer should get 7% bonus: 1M * 7% = 70K MAGAX
+      const expectedReferrerBonus = magaxAmount * 7n / 100n;
+      // Referee should get 5% bonus: 1M * 5% = 50K MAGAX
+      const expectedRefereeBonus = magaxAmount * 5n / 100n;
+
+      expect(referrerReferrals).to.equal(1);
+      expect(referrerBonus).to.equal(expectedReferrerBonus);
+      expect(refereeBonus).to.equal(expectedRefereeBonus);
+
+      // Check total MAGAX includes bonuses
+      const buyer1Total = await presaleReceipts.userTotalMAGAX(buyer1.address);
+      const buyer2Total = await presaleReceipts.userTotalMAGAX(buyer2.address);
+      
+      expect(buyer1Total).to.equal(magaxAmount + expectedRefereeBonus);
+      expect(buyer2Total).to.equal(expectedReferrerBonus);
+    });
+
+    it("Should prevent self-referral", async function () {
+      const usdtAmount = ethers.parseUnits("1000", 6);
+      const magaxAmount = ethers.parseUnits("1000000", 18);
+      
+      await expect(presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer1.address // Self-referral
+      )).to.be.revertedWithCustomError(presaleReceipts, "SelfReferral");
+    });
+
+    it("Should prevent zero address as referrer", async function () {
+      const usdtAmount = ethers.parseUnits("1000", 6);
+      const magaxAmount = ethers.parseUnits("1000000", 18);
+      
+      await expect(presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        ethers.ZeroAddress
+      )).to.be.revertedWithCustomError(presaleReceipts, "InvalidReferrer");
+    });
+
+    it("Should only set referrer on first purchase", async function () {
+      const usdtAmount = ethers.parseUnits("500", 6);
+      const magaxAmount = ethers.parseUnits("500000", 18);
+      
+      // First purchase with buyer2 as referrer
+      await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      );
+
+      expect(await presaleReceipts.getUserReferrer(buyer1.address)).to.equal(buyer2.address);
+
+      // Second purchase with buyer3 as referrer (should not change referrer)
+      await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer3.address
+      );
+
+      // Referrer should still be buyer2
+      expect(await presaleReceipts.getUserReferrer(buyer1.address)).to.equal(buyer2.address);
+
+      // But buyer3 should still get bonus for this purchase
+      const [buyer3Referrals, buyer3Bonus] = await presaleReceipts.getReferralInfo(buyer3.address);
+      expect(buyer3Referrals).to.equal(1);
+      expect(buyer3Bonus).to.be.gt(0);
+    });
+
+    it("Should track multiple referrals for one referrer", async function () {
+      const usdtAmount = ethers.parseUnits("1000", 6);
+      const magaxAmount = ethers.parseUnits("1000000", 18);
+      
+      // buyer2 refers buyer1
+      await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      );
+
+      // buyer2 refers buyer3
+      await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer3.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      );
+
+      const [referrals, totalBonus] = await presaleReceipts.getReferralInfo(buyer2.address);
+      const expectedBonus = (magaxAmount * 7n / 100n) * 2n; // 7% of 2M MAGAX
+
+      expect(referrals).to.equal(2);
+      expect(totalBonus).to.equal(expectedBonus);
+    });
+
+    it("Should create receipts for both base purchase and bonuses", async function () {
+      const usdtAmount = ethers.parseUnits("1000", 6);
+      const magaxAmount = ethers.parseUnits("1000000", 18);
+      
+      await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      );
+
+      // buyer1 should have 2 receipts: base purchase + referee bonus
+      const buyer1Receipts = await presaleReceipts.getReceipts(buyer1.address);
+      expect(buyer1Receipts.length).to.equal(2);
+      
+      // First receipt: base purchase
+      expect(buyer1Receipts[0].usdt).to.equal(usdtAmount);
+      expect(buyer1Receipts[0].magax).to.equal(magaxAmount);
+      expect(buyer1Receipts[0].isReferralBonus).to.be.false;
+      
+      // Second receipt: referee bonus
+      expect(buyer1Receipts[1].usdt).to.equal(0);
+      expect(buyer1Receipts[1].magax).to.equal(magaxAmount * 5n / 100n);
+      expect(buyer1Receipts[1].isReferralBonus).to.be.true;
+
+      // buyer2 should have 1 receipt: referrer bonus
+      const buyer2Receipts = await presaleReceipts.getReceipts(buyer2.address);
+      expect(buyer2Receipts.length).to.equal(1);
+      expect(buyer2Receipts[0].usdt).to.equal(0);
+      expect(buyer2Receipts[0].magax).to.equal(magaxAmount * 7n / 100n);
+      expect(buyer2Receipts[0].isReferralBonus).to.be.true;
+    });
+
+    it("Should update stage tokens sold with bonuses included", async function () {
+      const initialStageInfo = await presaleReceipts.getStageInfo(1);
+      const initialTokensSold = initialStageInfo.tokensSold;
+      
+      const usdtAmount = ethers.parseUnits("1000", 6);
+      const magaxAmount = ethers.parseUnits("1000000", 18);
+      
+      await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      );
+
+      const finalStageInfo = await presaleReceipts.getStageInfo(1);
+      const finalTokensSold = finalStageInfo.tokensSold;
+      
+      // Should include base amount + referrer bonus (7%) + referee bonus (5%) = 112% of base
+      const expectedIncrease = magaxAmount + (magaxAmount * 7n / 100n) + (magaxAmount * 5n / 100n);
+      expect(finalTokensSold - initialTokensSold).to.equal(expectedIncrease);
+    });
+
+    it("Should work with role-based access control", async function () {
+      const usdtAmount = ethers.parseUnits("1000", 6);
+      const magaxAmount = ethers.parseUnits("1000000", 18);
+      
+      // Should fail with unauthorized account
+      await expect(presaleReceipts.connect(unauthorized).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      )).to.be.reverted;
+
+      // Should work with recorder role
+      await expect(presaleReceipts.connect(recorder).recordPurchaseWithReferral(
+        buyer1.address,
+        usdtAmount,
+        magaxAmount,
+        buyer2.address
+      )).to.not.be.reverted;
+    });
+  });
 });
