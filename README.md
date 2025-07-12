@@ -40,14 +40,19 @@ The presale receipt system provides:
 
 - **Transparent tracking** of all presale purchases
 - **On-chain receipts** showing USDT paid and MAGAX allocated
-- **Role-based security** with RECORDER_ROLE for authorized purchase recording
+- **Role-based security** with PRESALE_MANAGER_ROLE for authorized purchase recording
 - **Pausable functionality** for emergency control
 - **Multi-purchase support** per buyer
+- **50-stage presale system** with configurable pricing
+- **Referral program** with 7% referrer and 5% referee bonuses
 
 ### Key Features
 
 - ✅ Records USDT amount (6 decimals) and MAGAX amount (18 decimals)
 - ✅ Timestamp tracking for each purchase
+- ✅ Stage-based pricing system (50 stages)
+- ✅ Comprehensive referral system with bonus tracking
+- ✅ Security hardening with purchase limits and validation
 - ✅ Total supply tracking (totalUSDT & totalMAGAX)
 - ✅ Access control with admin and recorder roles
 - ✅ Emergency pause/unpause functionality
@@ -88,7 +93,11 @@ npx hardhat compile
 ### 4. Run Tests
 
 ```bash
+# Run all tests (73 tests including referral system)
 npx hardhat test
+
+# Run only referral system tests
+npx hardhat test --grep "Referral System"
 ```
 
 ### 5. Deploy to Sepolia

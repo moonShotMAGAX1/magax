@@ -20,6 +20,8 @@ error StageNotActive();
 error InsufficientStageTokens();
 error InvalidPrice();
 error StageAlreadyActive();
+error InvalidReferrer();
+error SelfReferral();
 
 contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     bytes32 public constant RECORDER_ROLE = keccak256("RECORDER_ROLE");
@@ -29,12 +31,18 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     uint128 public constant MAX_TOTAL_USDT = 10000000 * 1e6;   // 10M USDT total presale limit
     uint8 public constant MAX_STAGES = 50; // Maximum number of presale stages
 
+    // Referral system constants
+    uint16 public constant REFERRER_BONUS_BPS = 700;  // 7% bonus for referrer
+    uint16 public constant REFEREE_BONUS_BPS = 500;   // 5% bonus for referee
+    uint16 public constant BASIS_POINTS = 10000; // 100% in basis points
+
     struct Receipt {
         uint128 usdt;     // 6-decimals
         uint128 magax;    // 18-decimals
         uint40  time;     // timestamp
         uint8   stage;    // presale stage (1-50)
         uint128 pricePerToken; // USDT price per MAGAX token (6 decimals)
+        bool isReferralBonus; // true if this is a referral bonus receipt
     }
 
     // Stage management
@@ -45,10 +53,22 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         bool isActive;            // Whether stage is currently active
     }
 
+    // Referral system
+    struct ReferralInfo {
+        uint128 totalReferrals;      // Number of people referred
+        uint128 totalBonusEarned;    // Total bonus MAGAX earned as referrer
+        uint128 totalRefereeBonus;   // Total bonus MAGAX earned as referee
+        bool hasReferred;            // Whether this address has made any referrals
+    }
+
     // Core storage
     mapping(address => Receipt[]) public userReceipts;
     mapping(address => uint128) public userTotalUSDT; 
     mapping(address => uint128) public userTotalMAGAX;
+
+    // Referral system storage
+    mapping(address => ReferralInfo) public referralData;
+    mapping(address => address) public userReferrer; // user -> their referrer
 
     // Stage management
     mapping(uint8 => StageInfo) public stages;
@@ -71,6 +91,19 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 pricePerToken,
         uint256 totalUserPurchases,
         bool isNewBuyer
+    );
+
+    event ReferralBonusAwarded(
+        address indexed referrer,
+        address indexed referee,
+        uint128 referrerBonus,
+        uint128 refereeBonus,
+        uint8 stage
+    );
+
+    event ReferrerSet(
+        address indexed user,
+        address indexed referrer
     );
 
     event StageConfigured(
@@ -128,7 +161,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         
         // Update storage
         userReceipts[buyer].push(
-            Receipt(usdtAmount, magaxAmount, uint40(block.timestamp), currentStage, stagePrice)
+            Receipt(usdtAmount, magaxAmount, uint40(block.timestamp), currentStage, stagePrice, false)
         );
         
         // Update totals efficiently
@@ -156,6 +189,84 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         );
         
         purchaseCounter++;
+    }
+
+    /**
+     * @notice Record a purchase with referral bonus
+     * @param buyer The address of the buyer
+     * @param usdtAmount The amount of USDT spent
+     * @param magaxAmount The amount of MAGAX received (base amount)
+     * @param referrer The address of the referrer
+     */
+    function recordPurchaseWithReferral(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        address referrer
+    ) external onlyRole(RECORDER_ROLE) whenNotPaused {
+        if (buyer == address(0)) revert InvalidAddress();
+        if (referrer == address(0)) revert InvalidReferrer();
+        if (buyer == referrer) revert SelfReferral();
+        if (usdtAmount == 0 || magaxAmount == 0) revert InvalidAmount();
+        if (currentStage == 0) revert InvalidStage();
+
+        // Set referrer if this is the first purchase
+        if (userReferrer[buyer] == address(0)) {
+            userReferrer[buyer] = referrer;
+            emit ReferrerSet(buyer, referrer);
+        }
+
+        // Calculate bonuses
+        uint128 referrerBonus = (magaxAmount * REFERRER_BONUS_BPS) / BASIS_POINTS;
+        uint128 refereeBonus = (magaxAmount * REFEREE_BONUS_BPS) / BASIS_POINTS;
+
+        bool isNewBuyer = userReceipts[buyer].length == 0;
+        uint8 stageForPurchase = currentStage;
+        uint128 stagePrice = stages[currentStage].pricePerToken;
+        
+        // Record base purchase
+        userReceipts[buyer].push(
+            Receipt(usdtAmount, magaxAmount, uint40(block.timestamp), stageForPurchase, stagePrice, false)
+        );
+
+        // Record referrer bonus
+        userReceipts[referrer].push(
+            Receipt(0, referrerBonus, uint40(block.timestamp), stageForPurchase, stagePrice, true)
+        );
+
+        // Record referee bonus
+        userReceipts[buyer].push(
+            Receipt(0, refereeBonus, uint40(block.timestamp), stageForPurchase, stagePrice, true)
+        );
+        
+        // Update totals
+        userTotalUSDT[buyer] += usdtAmount;
+        userTotalMAGAX[buyer] += magaxAmount + refereeBonus;
+        userTotalMAGAX[referrer] += referrerBonus;
+        
+        totalUSDT += usdtAmount;
+        totalMAGAX += magaxAmount + referrerBonus + refereeBonus;
+        
+        // Update referral data
+        referralData[referrer].totalReferrals++;
+        referralData[referrer].totalBonusEarned += referrerBonus;
+        referralData[buyer].totalBonusEarned += refereeBonus;
+        
+        // Update stage tokens sold (including bonuses)
+        stages[currentStage].tokensSold += magaxAmount + referrerBonus + refereeBonus;
+        
+        emit PurchaseRecorded(
+            buyer,
+            usdtAmount,
+            magaxAmount,
+            uint40(block.timestamp),
+            stageForPurchase,
+            stagePrice,
+            userReceipts[buyer].length,
+            isNewBuyer
+        );
+
+        emit ReferralBonusAwarded(referrer, buyer, referrerBonus, refereeBonus, stageForPurchase);
     }
 
     function getReceipts(address buyer) external view returns (Receipt[] memory) {
@@ -319,5 +430,34 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     
     fallback() external payable {
         revert EthNotAccepted();
+    }
+
+    /**
+     * @notice Get referral information for a user
+     * @param user The address to check
+     * @return totalReferrals Number of successful referrals
+     * @return totalBonusEarned Total bonus MAGAX earned
+     */
+    function getReferralInfo(address user) external view returns (uint256 totalReferrals, uint128 totalBonusEarned) {
+        ReferralInfo memory info = referralData[user];
+        return (info.totalReferrals, info.totalBonusEarned);
+    }
+
+    /**
+     * @notice Get the referrer of a user
+     * @param user The address to check
+     * @return referrer The address of the referrer (address(0) if no referrer)
+     */
+    function getUserReferrer(address user) external view returns (address) {
+        return userReferrer[user];
+    }
+
+    /**
+     * @notice Check if a user has a referrer
+     * @param user The address to check
+     * @return hasReferrer True if user has a referrer
+     */
+    function hasReferrer(address user) external view returns (bool) {
+        return userReferrer[user] != address(0);
     }
 }
