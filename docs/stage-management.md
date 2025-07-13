@@ -69,7 +69,7 @@ function activateStage(uint8 stage) external onlyRole(DEFAULT_ADMIN_ROLE)
 
 ### Stage Activation Flow
 
-```
+```bash
 1. Admin calls activateStage(newStage)
 2. Contract deactivates current stage (emits StageDeactivated event)
 3. Contract activates new stage (emits StageActivated event)

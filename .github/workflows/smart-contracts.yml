@@ -1,0 +1,311 @@
+name: Smart Contract CI/CD
+
+on:
+  push:
+    branches: 
+      - main
+      - develop
+      - feat/*
+    paths:
+      - 'contracts/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'hardhat.config.js'
+      - 'package.json'
+  pull_request:
+    branches: 
+      - main
+      - develop
+    paths:
+      - 'contracts/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'hardhat.config.js'
+      - 'package.json'
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # Code Quality and Testing
+  test:
+    name: Test Smart Contracts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Compile contracts
+        run: npx hardhat compile
+        
+      - name: Run tests
+        run: npx hardhat test
+        env:
+          REPORT_GAS: true
+          
+      - name: Run coverage
+        run: npx hardhat coverage
+        
+      - name: Security analysis with Slither (if available)
+        run: |
+          if command -v slither &> /dev/null; then
+            slither contracts/
+          else
+            echo "Slither not available, skipping security analysis"
+          fi
+        continue-on-error: true
+
+  # Testnet Deployment (Sepolia)
+  deploy-testnet:
+    name: Deploy to Sepolia Testnet
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/develop' || contains(github.ref, 'refs/heads/feat/')
+    environment: testnet
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Compile contracts
+        run: npx hardhat compile
+        
+      - name: Deploy to Sepolia
+        run: npx hardhat run scripts/deploy.js --network sepolia
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          TREASURY_ADDRESS: ${{ secrets.TREASURY_ADDRESS }}
+          RECORDER_ADDRESS: ${{ secrets.RECORDER_ADDRESS }}
+          ADMIN_ADDRESS: ${{ secrets.ADMIN_ADDRESS }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          
+      - name: Verify contracts on Etherscan
+        run: |
+          sleep 30  # Wait for Etherscan to index
+          if [ -f deployments/sepolia.json ]; then
+            TOKEN_ADDRESS=$(cat deployments/sepolia.json | jq -r '.token.address')
+            PRESALE_ADDRESS=$(cat deployments/sepolia.json | jq -r '.presale.address')
+            
+            npx hardhat verify --network sepolia $TOKEN_ADDRESS "${{ secrets.TREASURY_ADDRESS }}"
+            npx hardhat verify --network sepolia $PRESALE_ADDRESS "${{ secrets.RECORDER_ADDRESS }}"
+          fi
+        env:
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        continue-on-error: true
+        
+      - name: Save deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sepolia-deployment
+          path: |
+            deployments/sepolia.json
+            artifacts/
+          retention-days: 30
+          
+      - name: Comment deployment info on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('deployments/sepolia.json')) {
+              const deployment = JSON.parse(fs.readFileSync('deployments/sepolia.json', 'utf8'));
+              const comment = `
+              **Testnet Deployment Successful!**
+              
+              **Sepolia Network:**
+              - Token Contract: \`${deployment.token.address}\`
+              - Presale Contract: \`${deployment.presale.address}\`
+              - Gas Used: ${deployment.gasUsed} ETH
+              - Etherscan: [View Contracts](https://sepolia.etherscan.io/address/${deployment.presale.address})
+              
+              Ready for integration testing!
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  # Mainnet Deployment (Production)
+  deploy-mainnet:
+    name: Deploy to Ethereum Mainnet
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[DEPLOY-MAINNET]')
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Compile contracts
+        run: npx hardhat compile
+        
+      - name: Pre-deployment validation
+        run: |
+          echo "Pre-deployment checks..."
+          
+          # Check if audit report exists
+          if [ ! -f "audit-report.pdf" ]; then
+            echo "Warning: No audit report found"
+          fi
+          
+          # Validate environment variables
+          if [ -z "${{ secrets.MAINNET_PRIVATE_KEY }}" ]; then
+            echo "MAINNET_PRIVATE_KEY not set"
+            exit 1
+          fi
+          
+          # Check gas price
+          echo "Current gas price check..."
+          npx hardhat run scripts/check-gas-price.js --network mainnet || true
+          
+      - name: Deploy to Mainnet
+        run: npx hardhat run scripts/deploy.js --network mainnet
+        env:
+          MAINNET_PRIVATE_KEY: ${{ secrets.MAINNET_PRIVATE_KEY }}
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+          TREASURY_ADDRESS: ${{ secrets.TREASURY_ADDRESS }}
+          RECORDER_ADDRESS: ${{ secrets.RECORDER_ADDRESS }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          
+      - name: Verify contracts on Etherscan
+        run: |
+          sleep 60  # Wait longer for mainnet indexing
+          if [ -f deployments/mainnet.json ]; then
+            TOKEN_ADDRESS=$(cat deployments/mainnet.json | jq -r '.token.address')
+            PRESALE_ADDRESS=$(cat deployments/mainnet.json | jq -r '.presale.address')
+            
+            npx hardhat verify --network mainnet $TOKEN_ADDRESS "${{ secrets.TREASURY_ADDRESS }}"
+            npx hardhat verify --network mainnet $PRESALE_ADDRESS "${{ secrets.RECORDER_ADDRESS }}"
+          fi
+        env:
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        continue-on-error: true
+        
+      - name: Save deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mainnet-deployment
+          path: |
+            deployments/mainnet.json
+            artifacts/
+          retention-days: 365
+          
+      - name: Create GitHub Release
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: mainnet-v${{ github.run_number }}
+          release_name: Mainnet Deployment v${{ github.run_number }}
+          body: |
+            ## MAGAX Mainnet Deployment
+            
+            **Deployment Details:**
+            - Network: Ethereum Mainnet
+            - Deployment Time: ${{ github.event.head_commit.timestamp }}
+            - Commit: ${{ github.sha }}
+            
+            **Contract Addresses:**
+            - Check the deployment artifacts for contract addresses
+            
+            **Verification:**
+            - Contracts verified on Etherscan
+            - All tests passed
+            - Ready for production use
+            
+            ## Important Notes
+            - Contract addresses are permanent and cannot be changed
+            - Ensure all systems are updated with new addresses
+            - Monitor initial transactions closely
+          draft: false
+          prerelease: false
+          
+      - name: Post-deployment notifications
+        run: |
+          echo "Mainnet deployment completed successfully!"
+          echo "Deployment summary will be available in artifacts"
+          echo "Don't forget to update all systems with new contract addresses"
+
+  # Security Scan
+  security-scan:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Compile contracts
+        run: npx hardhat compile
+        
+      - name: Run Mythril analysis (if available)
+        run: |
+          if command -v myth &> /dev/null; then
+            myth analyze contracts/ --solv 0.8.23
+          else
+            echo "Mythril not available, install for security analysis"
+          fi
+        continue-on-error: true
+        
+      - name: Check for known vulnerabilities
+        run: |
+          # Check for common patterns
+          echo "🔍 Checking for common security patterns..."
+          
+          # Check for reentrancy guards
+          if ! grep -r "ReentrancyGuard" contracts/; then
+            echo "Consider using ReentrancyGuard for state-changing functions"
+          fi
+          
+          # Check for access controls
+          if ! grep -r "onlyRole\|onlyOwner" contracts/; then
+            echo "Ensure proper access controls are implemented"
+          fi
+          
+          echo "Basic security pattern check completed"

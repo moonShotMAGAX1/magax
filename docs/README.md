@@ -14,7 +14,7 @@ Welcome to the comprehensive documentation for the MoonShot MAGAX presale system
 - **[Deployment Guide](./deployment-guide.md)** - Complete deployment and setup instructions
 - **[Quick Reference](./quick-reference.md)** - Common functions and code snippets
 
-## 🚀 Quick Start
+## Quick Start
 
 The MoonShot MAGAX presale system consists of two main contracts:
 
@@ -37,7 +37,7 @@ The MoonShot MAGAX presale system consists of two main contracts:
 4. **Stage Progression**: Admin manages transitions between pricing stages
 5. **Analytics**: Real-time presale statistics and user purchase history
 
-## 🔗 Contract Addresses
+## Contract Addresses
 
 ### Testnet (Sepolia)
 
@@ -49,6 +49,6 @@ The MoonShot MAGAX presale system consists of two main contracts:
 - MoonShotMAGAX: `TBD`
 - MAGAXPresaleReceipts: `TBD`
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License.

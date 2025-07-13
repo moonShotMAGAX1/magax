@@ -29,7 +29,7 @@ describe("MoonShotMAGAX - Enhanced Token", function () {
     });
 
     it("Should set correct max supply", async function () {
-      expect(await token.MAX_SUPPLY()).to.equal(MAX_SUPPLY);
+      expect(await token.getMaxSupply()).to.equal(MAX_SUPPLY);
     });
 
     it("Should set deployer as owner", async function () {
@@ -333,18 +333,18 @@ describe("MoonShotMAGAX - Enhanced Token", function () {
 
   describe("Constants and Invariants", function () {
     it("Should have correct MAX_SUPPLY constant", async function () {
-      expect(await token.MAX_SUPPLY()).to.equal(ethers.parseUnits("1000000000000", 18));
+      expect(await token.getMaxSupply()).to.equal(ethers.parseUnits("1000000000000", 18));
     });
 
     it("Should never exceed MAX_SUPPLY", async function () {
       // Initial supply should equal max supply
-      expect(await token.totalSupply()).to.equal(await token.MAX_SUPPLY());
+      expect(await token.totalSupply()).to.equal(await token.getMaxSupply());
       
       // After burning, supply should be less than max
       await token.connect(treasury).transfer(user1.address, ethers.parseUnits("1000", 18));
       await token.connect(user1).burn(ethers.parseUnits("100", 18));
       
-      expect(await token.totalSupply()).to.be.lessThan(await token.MAX_SUPPLY());
+      expect(await token.totalSupply()).to.be.lessThan(await token.getMaxSupply());
     });
 
     it("Should maintain ERC20 standard compliance", async function () {
