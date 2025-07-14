@@ -1,6 +1,6 @@
 # MoonShot MAGAX
 
-## 🪙 Token Details
+## Token Details
 
 - **Token Name:** MoonShot MAGAX
 
@@ -8,7 +8,7 @@ Complete ecosystem for the MoonShot MAGAX token, including the ERC-20 token cont
 
 ---
 
-## 📋 Project Overview
+## Project Overview
 
 This project consists of two main smart contracts:
 
@@ -34,23 +34,25 @@ This project consists of two main smart contracts:
 
 ---
 
-## 🎫 Presale System
+## Presale System
 
 The presale receipt system provides:
 
 - **Transparent tracking** of all presale purchases
 - **On-chain receipts** showing USDT paid and MAGAX allocated
-- **Role-based security** with RECORDER_ROLE for authorized purchase recording
+- **Role-based security** with PRESALE_MANAGER_ROLE for authorized purchase recording
 - **Pausable functionality** for emergency control
 - **Multi-purchase support** per buyer
+- **50-stage presale system** with configurable pricing
+- **Referral program** with 7% referrer and 5% referee bonuses
 
 ### Key Features
 
-- ✅ Records USDT amount (6 decimals) and MAGAX amount (18 decimals)
-- ✅ Timestamp tracking for each purchase
-- ✅ Total supply tracking (totalUSDT & totalMAGAX)
-- ✅ Access control with admin and recorder roles
-- ✅ Emergency pause/unpause functionality
+- Records USDT amount (6 decimals) and MAGAX amount (18 decimals)
+- Timestamp tracking for each purchase
+- Total supply tracking (totalUSDT & totalMAGAX)
+- Access control with admin and recorder roles
+- Emergency pause/unpause functionality
 
 ---
 
@@ -88,7 +90,11 @@ npx hardhat compile
 ### 4. Run Tests
 
 ```bash
+# Run all tests (73 tests including referral system)
 npx hardhat test
+
+# Run only referral system tests
+npx hardhat test --grep "Referral System"
 ```
 
 ### 5. Deploy to Sepolia
@@ -103,11 +109,11 @@ npx hardhat run scripts/deploy.js --network sepolia
 
 The project includes comprehensive tests covering:
 
-- ✅ Contract deployment and initialization
-- ✅ Purchase recording functionality
-- ✅ Access control and security
-- ✅ Pause/unpause mechanisms
-- ✅ Edge cases and error handling
+- Contract deployment and initialization
+- Purchase recording functionality
+- Access control and security
+- Pause/unpause mechanisms
+- Edge cases and error handling
 
 Run all tests:
 
@@ -152,7 +158,7 @@ magax/
 
 ---
 
-## 🚀 Usage Example
+## Usage Example
 
 ### Recording a Presale Purchase
 
@@ -174,7 +180,7 @@ Receipt[] memory receipts = presaleReceipts.getReceipts(buyerAddress);
 
 ---
 
-## 📊 Gas Usage
+## Gas Usage
 
 | Function | Gas Usage |
 |----------|-----------|
