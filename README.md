@@ -1,6 +1,6 @@
 # MoonShot MAGAX
 
-## 🪙 Token Details
+## Token Details
 
 - **Token Name:** MoonShot MAGAX
 
@@ -8,7 +8,7 @@ Complete ecosystem for the MoonShot MAGAX token, including the ERC-20 token cont
 
 ---
 
-## 📋 Project Overview
+## Project Overview
 
 This project consists of two main smart contracts:
 
@@ -34,7 +34,7 @@ This project consists of two main smart contracts:
 
 ---
 
-## 🎫 Presale System
+## Presale System
 
 The presale receipt system provides:
 
@@ -48,14 +48,11 @@ The presale receipt system provides:
 
 ### Key Features
 
-- ✅ Records USDT amount (6 decimals) and MAGAX amount (18 decimals)
-- ✅ Timestamp tracking for each purchase
-- ✅ Stage-based pricing system (50 stages)
-- ✅ Comprehensive referral system with bonus tracking
-- ✅ Security hardening with purchase limits and validation
-- ✅ Total supply tracking (totalUSDT & totalMAGAX)
-- ✅ Access control with admin and recorder roles
-- ✅ Emergency pause/unpause functionality
+- Records USDT amount (6 decimals) and MAGAX amount (18 decimals)
+- Timestamp tracking for each purchase
+- Total supply tracking (totalUSDT & totalMAGAX)
+- Access control with admin and recorder roles
+- Emergency pause/unpause functionality
 
 ---
 
@@ -112,11 +109,11 @@ npx hardhat run scripts/deploy.js --network sepolia
 
 The project includes comprehensive tests covering:
 
-- ✅ Contract deployment and initialization
-- ✅ Purchase recording functionality
-- ✅ Access control and security
-- ✅ Pause/unpause mechanisms
-- ✅ Edge cases and error handling
+- Contract deployment and initialization
+- Purchase recording functionality
+- Access control and security
+- Pause/unpause mechanisms
+- Edge cases and error handling
 
 Run all tests:
 
@@ -161,7 +158,7 @@ magax/
 
 ---
 
-## 🚀 Usage Example
+## Usage Example
 
 ### Recording a Presale Purchase
 
@@ -183,7 +180,7 @@ Receipt[] memory receipts = presaleReceipts.getReceipts(buyerAddress);
 
 ---
 
-## 📊 Gas Usage
+## Gas Usage
 
 | Function | Gas Usage |
 |----------|-----------|
