@@ -14,7 +14,7 @@ module.exports = {
         }
       },
       {
-        version: "0.8.23",
+        version: "0.8.24",
         settings: {
           optimizer: {
             enabled: true,
@@ -50,6 +50,18 @@ module.exports = {
       url: process.env.POLYGON_MUMBAI_RPC_URL || "https://rpc-mumbai.maticvigil.com",
       accounts: process.env.POLYGON_DEPLOYER_PRIVATE_KEY ? [process.env.POLYGON_DEPLOYER_PRIVATE_KEY] : [],
       gasPrice: "auto"
+    },
+    amoy: {
+      url: process.env.POLYGON_RPC_URL || "https://polygon-amoy.infura.io/v3/",
+      accounts: process.env.POLYGON_DEPLOYER_PRIVATE_KEY ? [process.env.POLYGON_DEPLOYER_PRIVATE_KEY] : [],
+      gasPrice: "auto",
+      chainId: 80002
+    },
+    polygonAmoy: {
+      url: process.env.POLYGON_RPC_URL || "https://polygon-amoy.infura.io/v3/",
+      accounts: process.env.POLYGON_DEPLOYER_PRIVATE_KEY ? [process.env.POLYGON_DEPLOYER_PRIVATE_KEY] : [],
+      gasPrice: "auto",
+      chainId: 80002
     }
   },
   etherscan: {
@@ -57,8 +69,20 @@ module.exports = {
       mainnet: process.env.ETHERSCAN_API_KEY,
       sepolia: process.env.ETHERSCAN_API_KEY,
       polygon: process.env.POLYGONSCAN_API_KEY,
-      polygonMumbai: process.env.POLYGONSCAN_API_KEY
-    }
+      polygonMumbai: process.env.POLYGONSCAN_API_KEY,
+      amoy: process.env.POLYGONSCAN_API_KEY,
+      polygonAmoy: process.env.POLYGONSCAN_API_KEY
+    },
+    customChains: [
+      {
+        network: "polygonAmoy",
+        chainId: 80002,
+        urls: {
+          apiURL: "https://api-amoy.polygonscan.com/api",
+          browserURL: "https://amoy.polygonscan.com"
+        }
+      }
+    ]
   },
   gasReporter: {
     enabled: process.env.REPORT_GAS !== undefined,
