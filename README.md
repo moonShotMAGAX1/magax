@@ -188,6 +188,17 @@ Receipt[] memory receipts = presaleReceipts.getReceipts(buyerAddress);
 | Record Purchase | ~83k-163k gas |
 | Pause/Unpause | ~25k-47k gas |
 
+### ⚠️ Gas Considerations for Dynamic Arrays
+
+The `userReceipts` mapping stores dynamic arrays that can grow without bound as users make multiple purchases. Key considerations:
+
+- **Pagination**: Use `getReceiptsPaginated()` for users with many purchases to avoid gas limit issues
+- **Recommended Limits**: Consider implementing per-user purchase frequency limits in your frontend/backend
+- **Gas Cost Growth**: Each additional receipt increases gas costs for array operations
+- **Best Practice**: For high-frequency users, consider batching multiple small purchases into larger ones
+
+**Frontend Integration**: Always use pagination when displaying user purchase history for accounts with >100 purchases.
+
 ---
 
 ## 🤝 Contributing

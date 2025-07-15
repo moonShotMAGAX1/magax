@@ -89,13 +89,14 @@ async function main() {
   
   // Deploy with optimized gas settings
   const deployOptions = {
-    gasLimit: 4000000  // Set higher gas limit for large contract
+    gasLimit: 3000000  // Reduced gas limit to lower cost
   };
   if (maxFeePerGas && maxPriorityFeePerGas) {
-    deployOptions.maxFeePerGas = maxFeePerGas;
-    deployOptions.maxPriorityFeePerGas = maxPriorityFeePerGas;
+    // Use lower gas prices for testnet
+    deployOptions.maxFeePerGas = maxFeePerGas / 2n; // Half the suggested fee
+    deployOptions.maxPriorityFeePerGas = maxPriorityFeePerGas / 2n;
   } else if (gasPrice) {
-    deployOptions.gasPrice = gasPrice;
+    deployOptions.gasPrice = gasPrice / 2n; // Half the gas price
   }
   
   const presaleReceipts = await MAGAXPresaleReceipts.deploy(recorderAddress, deployOptions);

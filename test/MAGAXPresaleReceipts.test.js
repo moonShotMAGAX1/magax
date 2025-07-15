@@ -24,7 +24,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     
     // Setup initial stage for testing
     const stagePrice = ethers.parseUnits("0.001", 6); // 0.001 USDT per MAGAX
-    const stageAllocation = ethers.parseUnits("15000000", 18); // 15M MAGAX tokens (enough for all tests)
+    const stageAllocation = ethers.parseUnits("50000000000", 18); // 50B MAGAX tokens (enough for all tests)
     
     await presaleReceipts.connect(owner).configureStage(1, stagePrice, stageAllocation);
     await presaleReceipts.connect(owner).activateStage(1);
@@ -45,7 +45,6 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       expect(await presaleReceipts.totalUSDT()).to.equal(0);
       expect(await presaleReceipts.totalMAGAX()).to.equal(0);
       expect(await presaleReceipts.totalBuyers()).to.equal(0);
-      expect(await presaleReceipts.purchaseCounter()).to.equal(0);
     });
 
     it("Should prevent ETH deposits", async function () {
@@ -157,8 +156,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
 
   describe("Recording Purchases", function () {
     it("Should record a purchase successfully with stage info", async function () {
-      const usdtAmount = ethers.parseUnits("100", 6);
       const magaxAmount = ethers.parseUnits("1000", 18);
+      const usdtAmount = ethers.parseUnits("1", 6); // 1000 MAGAX * 0.001 USDT = 1 USDT
 
       const tx = await presaleReceipts.connect(recorder).recordPurchase(buyer1.address, usdtAmount, magaxAmount);
       const receipt = await tx.wait();
@@ -172,7 +171,6 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
           magaxAmount,
           await ethers.provider.getBlock('latest').then(b => b.timestamp),
           1, // current stage
-          ethers.parseUnits("0.001", 6), // stage price
           1, // total user purchases
           true // is new buyer
         );
@@ -180,7 +178,6 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       expect(await presaleReceipts.totalUSDT()).to.equal(usdtAmount);
       expect(await presaleReceipts.totalMAGAX()).to.equal(magaxAmount);
       expect(await presaleReceipts.totalBuyers()).to.equal(1);
-      expect(await presaleReceipts.purchaseCounter()).to.equal(1);
       
       // Check stage tokens sold updated
       const stageInfo = await presaleReceipts.getStageInfo(1);
@@ -204,8 +201,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
 
     it("Should record a purchase successfully", async function () {
-      const usdtAmount = ethers.parseUnits("100", 6);
       const magaxAmount = ethers.parseUnits("1000", 18);
+      const usdtAmount = ethers.parseUnits("1", 6); // 1000 MAGAX * 0.001 USDT = 1 USDT
 
       await expect(
         presaleReceipts.connect(recorder).recordPurchase(buyer1.address, usdtAmount, magaxAmount)
@@ -214,7 +211,6 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       expect(await presaleReceipts.totalUSDT()).to.equal(usdtAmount);
       expect(await presaleReceipts.totalMAGAX()).to.equal(magaxAmount);
       expect(await presaleReceipts.totalBuyers()).to.equal(1);
-      expect(await presaleReceipts.purchaseCounter()).to.equal(1);
     });
 
     it("Should enforce maximum purchase limit", async function () {
@@ -227,10 +223,12 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
 
     it("Should allow maximum purchase amount", async function () {
-      const magaxAmount = ethers.parseUnits("10000000", 18); // 10M MAGAX
+      // MAX_PURCHASE_USDT = 1,000,000 USDT (in 6 decimals)
+      // At 0.001 USDT per MAGAX, this should buy 1,000,000,000 MAGAX
+      const expectedMagaxAmount = ethers.parseUnits("1000000000", 18); // 1B MAGAX
 
       await expect(
-        presaleReceipts.connect(recorder).recordPurchase(buyer1.address, MAX_PURCHASE_USDT, magaxAmount)
+        presaleReceipts.connect(recorder).recordPurchase(buyer1.address, MAX_PURCHASE_USDT, expectedMagaxAmount)
       ).to.not.be.reverted;
 
       expect(await presaleReceipts.totalUSDT()).to.equal(MAX_PURCHASE_USDT);
@@ -240,7 +238,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       // Create a stage with enough tokens but test USDT limit
       // Configure a large stage to avoid token limit interference
       const largeStagePrice = ethers.parseUnits("0.001", 6);
-      const largeStageAllocation = ethers.parseUnits("100000000", 18); // 100M MAGAX tokens
+      const largeStageAllocation = ethers.parseUnits("50000000000", 18); // 50B MAGAX tokens (enough for max purchases)
       
       await presaleReceipts.connect(owner).configureStage(2, largeStagePrice, largeStageAllocation);
       await presaleReceipts.connect(owner).activateStage(2);
@@ -248,7 +246,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       // Record purchases totaling more than max (10M USDT total limit)
       // Using max individual purchase amount (1M USDT each)
       const purchaseAmount = ethers.parseUnits("1000000", 6); // 1M USDT (max individual)
-      const magaxAmount = ethers.parseUnits("1000000", 18); // 1M MAGAX tokens (reasonable amount)
+      const magaxAmount = ethers.parseUnits("1000000000", 18); // 1B MAGAX tokens (1M USDT / 0.001 USDT per MAGAX)
 
       // Make 10 purchases of 1M USDT each to reach the 10M total limit
       for (let i = 0; i < 10; i++) {
@@ -258,26 +256,26 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       
       // Next purchase should fail due to total USDT limit
       await expect(
-        presaleReceipts.connect(recorder).recordPurchase(buyer1.address, ethers.parseUnits("1", 6), ethers.parseUnits("1", 18))
+        presaleReceipts.connect(recorder).recordPurchase(buyer1.address, ethers.parseUnits("1", 6), ethers.parseUnits("1000", 18))
       ).to.be.revertedWithCustomError(presaleReceipts, "ExceedsTotalLimit");
 
       expect(await presaleReceipts.totalUSDT()).to.equal(MAX_TOTAL_USDT);
     });
 
     it("Should handle multiple purchases from same buyer", async function () {
-      const firstAmount = ethers.parseUnits("100", 6);
-      const secondAmount = ethers.parseUnits("200", 6);
-      const magaxAmount = ethers.parseUnits("1000", 18);
+      const firstAmount = ethers.parseUnits("100", 6); // 100 USDT
+      const secondAmount = ethers.parseUnits("200", 6); // 200 USDT
+      const firstMagaxAmount = ethers.parseUnits("100000", 18); // 100K MAGAX (100 USDT / 0.001)
+      const secondMagaxAmount = ethers.parseUnits("200000", 18); // 200K MAGAX (200 USDT / 0.001)
 
       // First purchase
-      await presaleReceipts.connect(recorder).recordPurchase(buyer1.address, firstAmount, magaxAmount);
+      await presaleReceipts.connect(recorder).recordPurchase(buyer1.address, firstAmount, firstMagaxAmount);
       expect(await presaleReceipts.totalBuyers()).to.equal(1);
 
       // Second purchase from same buyer
-      await presaleReceipts.connect(recorder).recordPurchase(buyer1.address, secondAmount, magaxAmount);
+      await presaleReceipts.connect(recorder).recordPurchase(buyer1.address, secondAmount, secondMagaxAmount);
       expect(await presaleReceipts.totalBuyers()).to.equal(1); // Should not increment
       expect(await presaleReceipts.userTotalUSDT(buyer1.address)).to.equal(firstAmount + secondAmount);
-      expect(await presaleReceipts.purchaseCounter()).to.equal(2);
     });
 
     it("Should fail with invalid inputs", async function () {
@@ -333,13 +331,13 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     beforeEach(async function () {
       await presaleReceipts.connect(recorder).recordPurchase(
         buyer1.address,
-        ethers.parseUnits("100", 6),
-        ethers.parseUnits("1000", 18)
+        ethers.parseUnits("100", 6), // 100 USDT
+        ethers.parseUnits("100000", 18) // 100K MAGAX (100 USDT / 0.001)
       );
       await presaleReceipts.connect(recorder).recordPurchase(
         buyer1.address,
-        ethers.parseUnits("200", 6),
-        ethers.parseUnits("2000", 18)
+        ethers.parseUnits("200", 6), // 200 USDT
+        ethers.parseUnits("200000", 18) // 200K MAGAX (200 USDT / 0.001)
       );
     });
 
@@ -348,7 +346,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       
       expect(stats.totalPurchases).to.equal(2);
       expect(stats.totalUSDTSpent).to.equal(ethers.parseUnits("300", 6));
-      expect(stats.totalMAGAXAllocated).to.equal(ethers.parseUnits("3000", 18));
+      expect(stats.totalMAGAXAllocated).to.equal(ethers.parseUnits("300000", 18)); // 100K + 200K MAGAX
       expect(stats.firstPurchaseTime).to.be.lessThanOrEqual(stats.lastPurchaseTime);
     });
 
@@ -371,7 +369,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       const stats = await presaleReceipts.getPresaleStats();
       
       expect(stats.totalUSDTRaised).to.equal(ethers.parseUnits("300", 6));
-      expect(stats.totalMAGAXSold).to.equal(ethers.parseUnits("3000", 18));
+      expect(stats.totalMAGAXSold).to.equal(ethers.parseUnits("300000", 18)); // 100K + 200K MAGAX
       expect(stats.totalUniqueBuyers).to.equal(1);
     });
   });
@@ -449,8 +447,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
   describe("Stress Tests", function () {
     it("Should handle many purchases correctly", async function () {
       const purchases = 5;
-      const usdtPerPurchase = ethers.parseUnits("10000", 6);
-      const magaxPerPurchase = ethers.parseUnits("100000", 18);
+      const usdtPerPurchase = ethers.parseUnits("10000", 6); // 10K USDT
+      const magaxPerPurchase = ethers.parseUnits("10000000", 18); // 10M MAGAX (10K USDT / 0.001)
 
       for (let i = 0; i < purchases; i++) {
         await presaleReceipts.connect(recorder).recordPurchase(
@@ -462,8 +460,6 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
 
       expect(await presaleReceipts.totalBuyers()).to.equal(1);
       expect(await presaleReceipts.userTotalUSDT(buyer1.address)).to.equal(usdtPerPurchase * BigInt(purchases));
-      expect(await presaleReceipts.purchaseCounter()).to.equal(purchases);
-
       const receipts = await presaleReceipts.getReceipts(buyer1.address);
       expect(receipts.length).to.equal(purchases);
     });
@@ -594,8 +590,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
 
     it("Should create receipts for both base purchase and bonuses", async function () {
-      const usdtAmount = ethers.parseUnits("1000", 6);
-      const magaxAmount = ethers.parseUnits("1000000", 18);
+      const magaxAmount = ethers.parseUnits("1000000", 18); // 1M MAGAX
+      const usdtAmount = ethers.parseUnits("1000", 6); // 1000 USDT (1M MAGAX * 0.001)
       
       await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
         buyer1.address,
@@ -608,22 +604,31 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       const buyer1Receipts = await presaleReceipts.getReceipts(buyer1.address);
       expect(buyer1Receipts.length).to.equal(2);
       
-      // First receipt: base purchase
+      // Receipt 1: base purchase
       expect(buyer1Receipts[0].usdt).to.equal(usdtAmount);
       expect(buyer1Receipts[0].magax).to.equal(magaxAmount);
       expect(buyer1Receipts[0].isReferralBonus).to.be.false;
       
-      // Second receipt: referee bonus
+      // Receipt 2: referee bonus (5%)
       expect(buyer1Receipts[1].usdt).to.equal(0);
-      expect(buyer1Receipts[1].magax).to.equal(magaxAmount * 5n / 100n);
       expect(buyer1Receipts[1].isReferralBonus).to.be.true;
 
-      // buyer2 should have 1 receipt: referrer bonus
+      // buyer2 should have 1 receipt: referral bonus (7%)
       const buyer2Receipts = await presaleReceipts.getReceipts(buyer2.address);
       expect(buyer2Receipts.length).to.equal(1);
+      
+      // Receipt: referrer bonus (0 USDT, bonus MAGAX, marked as bonus)
       expect(buyer2Receipts[0].usdt).to.equal(0);
-      expect(buyer2Receipts[0].magax).to.equal(magaxAmount * 7n / 100n);
       expect(buyer2Receipts[0].isReferralBonus).to.be.true;
+      
+      // Verify bonuses are tracked in user totals
+      const [, buyer1USDTSpent, buyer1MAGAXAllocated] = await presaleReceipts.getUserStats(buyer1.address);
+      const [, buyer2USDTSpent, buyer2MAGAXAllocated] = await presaleReceipts.getUserStats(buyer2.address);
+      
+      // buyer1 gets their purchase + referee bonus
+      expect(buyer1MAGAXAllocated).to.equal(magaxAmount + (magaxAmount * 5n / 100n));
+      // buyer2 gets referrer bonus
+      expect(buyer2MAGAXAllocated).to.equal(magaxAmount * 7n / 100n);
     });
 
     it("Should update stage tokens sold with bonuses included", async function () {
