@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
@@ -58,7 +58,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
 
     // Referral system
     struct ReferralInfo {
-        uint128 totalReferrals;      // Number of people referred
+        uint32  totalReferrals;      // Number of people referred (4B+ capacity)
         uint128 totalBonusEarned;    // Total bonus MAGAX earned as referrer
         uint128 totalRefereeBonus;   // Total bonus MAGAX earned as referee
     }
@@ -112,7 +112,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 tokensAllocated
     );
 
-    event StageActivated(uint8 indexed stage);
+    event StageActivated(uint8 indexed stage, address indexed operator);
     event StageDeactivated(uint8 indexed stage);
     event StageCompleted(uint8 indexed stage, uint128 tokensSold);
 
@@ -157,6 +157,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         if (buyer == address(0)) revert InvalidAddress();
         if (usdtAmount == 0 || magaxAmount == 0) revert InvalidAmount();
         if (usdtAmount > MAX_PURCHASE_USDT) revert ExceedsMaxPurchase();
+        
+        // Edge case: Check if purchase exactly hits MAX_TOTAL_USDT (should be allowed)
         if (totalUSDT + usdtAmount > MAX_TOTAL_USDT) revert ExceedsTotalLimit();
     }
 
@@ -170,8 +172,10 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
 
     /**
      * @notice Validates price consistency between USDT amount and MAGAX amount
-     * @dev Allows ±1 USDT tolerance to handle rounding when magaxAmount is not 
-     *      an exact multiple of 10^12 wei (due to division truncation)
+     * @dev Handles rounding edge case when decimal conversions don't divide evenly.
+     *      Uses 256-bit arithmetic to prevent overflow, then allows ±1 USDT tolerance
+     *      for precision rounding. This prevents price manipulation while accommodating
+     *      legitimate rounding differences from decimal conversions.
      * @param usdtAmount The USDT amount (6 decimals)
      * @param magaxAmount The MAGAX amount (18 decimals) 
      * @param pricePerToken The price per token (6 decimals, USDT per MAGAX)
@@ -179,9 +183,10 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     function _validatePrice(uint128 usdtAmount, uint128 magaxAmount, uint128 pricePerToken) internal pure {
         // Price validation: usdtAmount should equal (magaxAmount * pricePerToken) / 1e18
         // Since USDT has 6 decimals and MAGAX has 18 decimals, and pricePerToken is in 6 decimals
-        uint128 expectedUSDT = (magaxAmount * pricePerToken) / 1e18;
+        uint256 expectedUSDT = (uint256(magaxAmount) * pricePerToken) / 1e18;
         
-        // Allow ±1 USDT tolerance for rounding issues
+        // Edge case: Allow ±1 USDT tolerance for rounding when decimal conversions don't divide evenly
+        // This handles cases where 256-bit arithmetic precision still results in minor rounding differences
         if (usdtAmount > expectedUSDT) {
             if (usdtAmount - expectedUSDT > 1e6) revert PriceMismatch(); // More than 1 USDT over
         } else {
@@ -251,7 +256,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 usdtAmount,
         uint128 magaxAmount,
         address referrer
-    ) external onlyRole(RECORDER_ROLE) whenNotPaused {
+    ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
         if (finalised) revert PresaleFinalised();
         
         _validateReferralPurchase(buyer, usdtAmount, magaxAmount, referrer);
@@ -275,11 +280,15 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         _processReferralPurchase(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokens, stage, stageInfo, timestamp);
     }
 
-    function _validateReferralPurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount, address referrer) internal pure {
+    function _validateReferralPurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount, address referrer) internal view {
         if (buyer == address(0)) revert InvalidAddress();
         if (referrer == address(0)) revert InvalidReferrer();
         if (buyer == referrer) revert SelfReferral();
         if (usdtAmount == 0 || magaxAmount == 0) revert InvalidAmount();
+        if (usdtAmount > MAX_PURCHASE_USDT) revert ExceedsMaxPurchase();
+        
+        // Edge case: Check total limit including potential bonuses
+        if (totalUSDT + usdtAmount > MAX_TOTAL_USDT) revert ExceedsTotalLimit();
     }
 
     function _calculateBonuses(uint128 magaxAmount) internal pure returns (uint128 referrerBonus, uint128 refereeBonus, uint128 totalTokens) {
@@ -346,11 +355,15 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     ) internal {
         userTotalUSDT[buyer] += usdtAmount;
         userTotalMAGAX[buyer] += magaxAmount + refereeBonus;
+        
+        // Edge case: When referrer makes subsequent normal purchases, 
+        // only count their own purchase, not double-count as referral bonus
         userTotalMAGAX[referrer] += referrerBonus;
         
         totalUSDT += usdtAmount;
         totalMAGAX += totalTokensRequired;
         
+        // Update referral statistics (bonuses are tracked separately from purchases)
         unchecked { referralData[referrer].totalReferrals++; }
         referralData[referrer].totalBonusEarned += referrerBonus;
         referralData[buyer].totalRefereeBonus += refereeBonus;
@@ -452,6 +465,12 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         emit StageConfigured(stage, pricePerToken, tokensAllocated);
     }
 
+    /**
+     * @notice Activates a specific presale stage and deactivates the current one
+     * @dev Stage transitions are intentionally manual for admin control and flexibility.
+     *      This allows for precise timing of stage changes and emergency adjustments.
+     * @param stage The stage number to activate (1-50)
+     */
     function activateStage(uint8 stage) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
         if (stages[stage].tokensAllocated == 0) revert InvalidAmount();
@@ -468,7 +487,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         // Activate new stage
         stages[stage].isActive = true;
         currentStage = stage;
-        emit StageActivated(stage);
+        emit StageActivated(stage, msg.sender);
     }
 
     function getStageInfo(uint8 stage) external view returns (
@@ -519,6 +538,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
 
     function finalise() external onlyRole(DEFAULT_ADMIN_ROLE) {
         finalised = true;
+        _pause(); // Automatically pause to prevent accidental RECORDER_ROLE activity
         emit Finalised(uint40(block.timestamp));
     }
 
@@ -563,7 +583,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
      * @return totalReferrals Number of successful referrals
      * @return totalBonusEarned Total bonus MAGAX earned (as referrer + as referee)
      */
-    function getReferralInfo(address user) external view returns (uint256 totalReferrals, uint128 totalBonusEarned) {
+    function getReferralInfo(address user) external view returns (uint32 totalReferrals, uint128 totalBonusEarned) {
         ReferralInfo memory info = referralData[user];
         return (info.totalReferrals, info.totalBonusEarned + info.totalRefereeBonus);
     }

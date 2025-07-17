@@ -1,374 +1,218 @@
 const { ethers } = require("hardhat");
+const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
 
-async function main() {
-  console.log("MAGAX Multi-Chain Deployment Script");
-  console.log("====================================");
+const STAGES = [
+  { stage: 1,  price: "0.000270", tokens: "200000000"       },
+  { stage: 2,  price: "0.000293", tokens: "210400000"       },
+  { stage: 3,  price: "0.000318", tokens: "221340800"       },
+  { stage: 4,  price: "0.000345", tokens: "232850522"       },
+  { stage: 5,  price: "0.000375", tokens: "244958749"       },
+  { stage: 6,  price: "0.000407", tokens: "257696604"       },
+  { stage: 7,  price: "0.000442", tokens: "271096827"       },
+  { stage: 8,  price: "0.000479", tokens: "285193862"       },
+  { stage: 9,  price: "0.000520", tokens: "300023943"       },
+  { stage:10,  price: "0.000565", tokens: "315625188"       },
+  { stage:11,  price: "0.000613", tokens: "332037698"       },
+  { stage:12,  price: "0.000665", tokens: "349303658"       },
+  { stage:13,  price: "0.000722", tokens: "367467448"       },
+  { stage:14,  price: "0.000784", tokens: "386575755"       },
+  { stage:15,  price: "0.000851", tokens: "406677695"       },
+  { stage:16,  price: "0.000924", tokens: "427824935"       },
+  { stage:17,  price: "0.001002", tokens: "450071832"       },
+  { stage:18,  price: "0.001088", tokens: "473475567"       },
+  { stage:19,  price: "0.001181", tokens: "498096296"       },
+  { stage:20,  price: "0.001282", tokens: "523997304"       },
+  { stage:21,  price: "0.001392", tokens: "551245163"       },
+  { stage:22,  price: "0.001510", tokens: "579909912"       },
+  { stage:23,  price: "0.001639", tokens: "610065227"       },
+  { stage:24,  price: "0.001780", tokens: "641788619"       },
+  { stage:25,  price: "0.001932", tokens: "675161627"       },
+  { stage:26,  price: "0.002097", tokens: "710270032"       },
+  { stage:27,  price: "0.002276", tokens: "747204074"       },
+  { stage:28,  price: "0.002470", tokens: "786058685"       },
+  { stage:29,  price: "0.002681", tokens: "826933737"       },
+  { stage:30,  price: "0.002910", tokens: "869934291"       },
+  { stage:31,  price: "0.003159", tokens: "915170875"       },
+  { stage:32,  price: "0.003429", tokens: "962759760"       },
+  { stage:33,  price: "0.003722", tokens: "1012823268"      },
+  { stage:34,  price: "0.004040", tokens: "1065490077"      },
+  { stage:35,  price: "0.004385", tokens: "1120895562"      },
+  { stage:36,  price: "0.004760", tokens: "1179182131"      },
+  { stage:37,  price: "0.005167", tokens: "1240499602"      },
+  { stage:38,  price: "0.005608", tokens: "1305005581"      },
+  { stage:39,  price: "0.006087", tokens: "1372865871"      },
+  { stage:40,  price: "0.006607", tokens: "1444254896"      },
+  { stage:41,  price: "0.007172", tokens: "1519356151"      },
+  { stage:42,  price: "0.007785", tokens: "1598362671"      },
+  { stage:43,  price: "0.008450", tokens: "1681477530"      },
+  { stage:44,  price: "0.009172", tokens: "1768914361"      },
+  { stage:45,  price: "0.009955", tokens: "1860897908"      },
+  { stage:46,  price: "0.010806", tokens: "1957664599"      },
+  { stage:47,  price: "0.011729", tokens: "2059463158"      },
+  { stage:48,  price: "0.012731", tokens: "2166555243"      },
+  { stage:49,  price: "0.013819", tokens: "2279216115"      },
+  { stage:50,  price: "0.015000", tokens: "2397735353"      }
+];
 
+async function main () {
   const [deployer] = await ethers.getSigners();
-  console.log("Deploying with account:", deployer.address);
+  const net          = await ethers.provider.getNetwork();
+  const chainId      = Number(net.chainId);
+  const pretty       = n => n.toLocaleString();
+  const isEth        = [1, 11155111].includes(chainId);        // mainnet / sepolia
+  const isPolygon    = [137, 80001, 80002].includes(chainId);  // main / mumbai / amoy
+  if (!isEth && !isPolygon) throw new Error(`Unsupported chain ${chainId}`);
 
-  // Check deployer balance
-  const balance = await ethers.provider.getBalance(deployer.address);
-  const network = await ethers.provider.getNetwork();
-  const networkName = network.name;
-  const chainId = network.chainId;
-  
-  console.log("Network:", networkName, "(Chain ID:", chainId, ")");
-  
-  // Determine native currency
-  const isPolygon = [137n, 80001n, 80002n].includes(chainId); // Polygon Mainnet, Mumbai, Amoy
-  const isEthereum = [1n, 11155111n].includes(chainId); // Mainnet, Sepolia
-  const currency = isPolygon ? "MATIC" : "ETH";
-  
-  console.log("Account balance:", ethers.formatEther(balance), currency);
 
-  // Set minimum balance based on network
-  const minBalance = isPolygon ? ethers.parseEther("0.3") : ethers.parseEther("0.05");
-  if (balance < minBalance) {
-    throw new Error(`Insufficient balance. Need at least ${ethers.formatEther(minBalance)} ${currency}, have ${ethers.formatEther(balance)} ${currency}`);
+  const bal      = await ethers.provider.getBalance(deployer);
+  const minNeed  = ethers.parseEther(isEth ? "0.05" : "0.3");
+  if (bal < minNeed) {
+    throw new Error(`Balance too low (${ethers.formatEther(bal)})`);
   }
 
-  // Get and validate environment variables
-  const treasuryAddress = process.env.TREASURY_ADDRESS;
-  const recorderAddress = process.env.RECORDER_ADDRESS;
-  const adminAddress = process.env.ADMIN_ADDRESS || treasuryAddress;
-  
-  console.log("");
-  console.log("Configuration:");
-  console.log("Treasury address:", treasuryAddress || "Not set");
-  console.log("Recorder address:", recorderAddress || "Not set");
-  console.log("Admin address:", adminAddress || "Not set");
+  const env = process.env;
+  const currency  = isEth ? "ETH" : "MATIC";
+  const treasury  = env.TREASURY_ADDRESS;
+  const recorder  = env.RECORDER_ADDRESS;
+  const admin     = env.ADMIN_ADDRESS || treasury;
 
-  // Decide what to deploy based on network
-  if (isEthereum) {
-    console.log("");
-    console.log("Deploying on Ethereum Network");
-    console.log("Will deploy: MAGAX Token Contract");
-    
-    if (!treasuryAddress) {
-      throw new Error("TREASURY_ADDRESS required for Ethereum deployment");
+  console.log(`\nDeployer  : ${deployer.address}`);
+  console.log(`Network   : ${net.name}  (chain ${chainId})`);
+  console.log(`Balance   : ${ethers.formatEther(bal)} ${currency}\n`);
+
+  if (isEth) {
+    if (!ethers.isAddress(treasury)) throw new Error("TREASURY_ADDRESS missing / invalid");
+
+    const Token = await ethers.getContractFactory("MoonShotMAGAX");
+    const token = await deployWithPrettyGas("MoonShotMAGAX", Token, [treasury]);
+    await dumpTokenInfo(token, treasury);
+
+    // Verify contract on block explorer
+    console.log("Verifying contract on block explorer...");
+    try {
+      await hre.run("verify:verify", {
+        address: await token.getAddress(),
+        constructorArguments: [treasury],
+      });
+      console.log("Contract verified successfully\n");
+    } catch (error) {
+      console.log("Verification failed:", error.message);
+      console.log("You can verify manually with:");
+      console.log(`npx hardhat verify --network ${net.name} ${await token.getAddress()} "${treasury}"\n`);
     }
-    if (!ethers.isAddress(treasuryAddress)) {
-      throw new Error("Invalid TREASURY_ADDRESS format");
-    }
-    
-    await deployToken(treasuryAddress, deployer, network, currency);
-    
-  } else if (isPolygon) {
-    console.log("");
-    console.log("Deploying on Polygon Network");
-    console.log("Will deploy: MAGAX Presale Contract");
-    
-    if (!recorderAddress) {
-      throw new Error("RECORDER_ADDRESS required for Polygon deployment");
-    }
-    if (!ethers.isAddress(recorderAddress)) {
-      throw new Error("Invalid RECORDER_ADDRESS format");
-    }
-    
-    await deployPresale(recorderAddress, adminAddress, deployer, network, currency);
-    
-  } else {
-    throw new Error(`Unsupported network. Chain ID: ${chainId}. Use Ethereum (1, 11155111) or Polygon (137, 80001, 80002)`);
+
+    await writeArtifact("token", net, token, { treasury });
+    return;
   }
-}
 
-async function deployToken(treasuryAddress, deployer, network, currency) {
-  console.log("");
-  console.log("Deploying MAGAX Token...");
-  
-  const MoonShotMAGAX = await ethers.getContractFactory("MoonShotMAGAX");
-  
-  // Estimate gas
-  const tokenDeployTx = await MoonShotMAGAX.getDeployTransaction(treasuryAddress);
-  const tokenGasEstimate = await deployer.estimateGas(tokenDeployTx);
-  const feeData = await ethers.provider.getFeeData();
-  
-  await logGasEstimation(tokenGasEstimate, feeData, currency);
-  
-  // Deploy with optimized gas settings
-  const deployOptions = getOptimizedGasOptions(feeData);
-  const token = await MoonShotMAGAX.deploy(treasuryAddress, deployOptions);
-  
-  console.log("Deployment transaction hash:", token.deploymentTransaction().hash);
-  
-  const tokenReceipt = await token.deploymentTransaction().wait();
-  const tokenAddress = await token.getAddress();
-  
-  console.log("Token deployed successfully!");
-  console.log("Address:", tokenAddress);
-  await logDeploymentResults(tokenReceipt, currency);
+  if (!ethers.isAddress(recorder)) throw new Error("RECORDER_ADDRESS missing / invalid");
 
-  // Verify token details
-  await verifyTokenDetails(token, treasuryAddress);
-  
-  // Save deployment info
-  const deploymentInfo = await createTokenDeploymentInfo(token, tokenReceipt, network, treasuryAddress);
-  await saveDeploymentInfo(deploymentInfo, `ethereum-token-${network.name}`);
-  
-  logNextSteps(network, tokenAddress, 'token', treasuryAddress);
-}
+  const Presale = await ethers.getContractFactory("MAGAXPresaleReceipts");
+  const presale = await deployWithPrettyGas("MAGAXPresaleReceipts", Presale, [recorder], { gasLimit: 4_000_000 });
 
-async function deployPresale(recorderAddress, adminAddress, deployer, network, currency) {
-  console.log("");
-  console.log("Deploying MAGAX Presale...");
-  
-  const MAGAXPresaleReceipts = await ethers.getContractFactory("MAGAXPresaleReceipts");
-  
-  // Estimate gas
-  const presaleDeployTx = await MAGAXPresaleReceipts.getDeployTransaction(recorderAddress);
-  const presaleGasEstimate = await deployer.estimateGas(presaleDeployTx);
-  const feeData = await ethers.provider.getFeeData();
-  
-  await logGasEstimation(presaleGasEstimate, feeData, currency);
-  
-  // Deploy with optimized gas settings and increased gas limit
-  const deployOptions = {
-    gasLimit: 4000000, // 4M gas limit for large presale contract
-    ...getOptimizedGasOptions(feeData)
-  };
-  const presale = await MAGAXPresaleReceipts.deploy(recorderAddress, deployOptions);
-  
-  console.log("Deployment transaction hash:", presale.deploymentTransaction().hash);
-  
-  const presaleReceipt = await presale.deploymentTransaction().wait();
-  const presaleAddress = await presale.getAddress();
-  
-  console.log("Presale deployed successfully!");
-  console.log("Address:", presaleAddress);
-  await logDeploymentResults(presaleReceipt, currency);
+  await setupRoles(presale, recorder, admin, deployer);
+  await configureStage1(presale);
+  await presale.activateStage(1);
+  console.log("Stage 1 activated\n");
 
-  // Setup permissions and configure stages
-  await setupPresalePermissions(presale, recorderAddress, adminAddress, deployer);
-  await configureInitialStages(presale);
+  await dumpPresaleInfo(presale);
   
-  // Verify presale details
-  await verifyPresaleDetails(presale);
-  
-  // Save deployment info
-  const deploymentInfo = await createPresaleDeploymentInfo(presale, presaleReceipt, network, recorderAddress, adminAddress);
-  await saveDeploymentInfo(deploymentInfo, `polygon-presale-${network.name}`);
-  
-  logNextSteps(network, presaleAddress, 'presale', recorderAddress);
-}
-
-// Helper functions
-async function logGasEstimation(gasEstimate, feeData, currency) {
-  let costEstimate;
-  
-  if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
-    costEstimate = gasEstimate * feeData.maxFeePerGas;
-    console.log("EIP-1559 Gas Estimation:");
-    console.log(`  Gas: ${gasEstimate.toLocaleString()}`);
-    console.log(`  Max fee: ${ethers.formatUnits(feeData.maxFeePerGas, "gwei")} gwei`);
-    console.log(`  Priority: ${ethers.formatUnits(feeData.maxPriorityFeePerGas, "gwei")} gwei`);
-  } else {
-    costEstimate = gasEstimate * feeData.gasPrice;
-    console.log("Legacy Gas Estimation:");
-    console.log(`  Gas: ${gasEstimate.toLocaleString()}`);
-    console.log(`  Price: ${ethers.formatUnits(feeData.gasPrice, "gwei")} gwei`);
-  }
-  
-  console.log(`  Cost: ${ethers.formatEther(costEstimate)} ${currency}`);
-}
-
-async function logDeploymentResults(receipt, currency) {
-  console.log("Block number:", receipt.blockNumber);
-  console.log("Gas used:", receipt.gasUsed.toLocaleString());
-  console.log("Effective gas price:", ethers.formatUnits(receipt.gasPrice, "gwei"), "gwei");
-  console.log("Total cost:", ethers.formatEther(receipt.gasUsed * receipt.gasPrice), currency);
-}
-
-function getOptimizedGasOptions(feeData) {
-  const deployOptions = {};
-  if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
-    deployOptions.maxFeePerGas = feeData.maxFeePerGas;
-    deployOptions.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
-  } else if (feeData.gasPrice) {
-    deployOptions.gasPrice = feeData.gasPrice;
-  }
-  return deployOptions;
-}
-
-async function verifyTokenDetails(token, treasuryAddress) {
-  console.log("");
-  console.log("Token Details:");
-  const name = await token.name();
-  const symbol = await token.symbol();
-  const decimals = await token.decimals();
-  const totalSupply = await token.totalSupply();
-  const maxSupply = await token.getMaxSupply();
-  const treasuryBalance = await token.balanceOf(treasuryAddress);
-  const owner = await token.owner();
-
-  console.log(`  Name: ${name}`);
-  console.log(`  Symbol: ${symbol}`);
-  console.log(`  Decimals: ${decimals}`);
-  console.log(`  Total Supply: ${ethers.formatUnits(totalSupply, decimals)} ${symbol}`);
-  console.log(`  Max Supply: ${ethers.formatUnits(maxSupply, decimals)} ${symbol}`);
-  console.log(`  Treasury: ${ethers.formatUnits(treasuryBalance, decimals)} ${symbol}`);
-  console.log(`  Owner: ${owner}`);
-}
-
-async function setupPresalePermissions(presale, recorderAddress, adminAddress, deployer) {
-  console.log("");
-  console.log("Setting up permissions...");
-  
-  const ADMIN_ROLE = await presale.DEFAULT_ADMIN_ROLE();
-  const RECORDER_ROLE = await presale.RECORDER_ROLE();
-  
-  const hasRecorderRole = await presale.hasRole(RECORDER_ROLE, recorderAddress);
-  console.log(`  Recorder role: ${hasRecorderRole ? 'Yes' : 'No'}`);
-  
-  if (adminAddress && adminAddress.toLowerCase() !== deployer.address.toLowerCase()) {
-    console.log("  Granting admin role...");
-    await presale.grantRole(ADMIN_ROLE, adminAddress);
-    console.log("  Admin role granted: Yes");
-  }
-}
-
-async function configureInitialStages(presale) {
-  console.log("");
-  console.log("Configuring stages...");
-  
+  // Verify contract on block explorer
+  console.log("Verifying contract on block explorer...");
   try {
-    // Stage 1: $0.001 per MAGAX, 10M allocation
-    await presale.configureStage(1, ethers.parseUnits("0.001", 6), ethers.parseUnits("10000000", 18));
-    console.log("  Stage 1: Configured");
-    
-    // Stage 2: $0.0015 per MAGAX, 20M allocation  
-    await presale.configureStage(2, ethers.parseUnits("0.0015", 6), ethers.parseUnits("20000000", 18));
-    console.log("  Stage 2: Configured");
-    
-    // Stage 3: $0.002 per MAGAX, 20M allocation
-    await presale.configureStage(3, ethers.parseUnits("0.002", 6), ethers.parseUnits("20000000", 18));
-    console.log("  Stage 3: Configured");
-    
-    // Activate stage 1
-    await presale.activateStage(1);
-    console.log("  Stage 1 activated: Yes");
-    
+    await hre.run("verify:verify", {
+      address: await presale.getAddress(),
+      constructorArguments: [recorder],
+    });
+    console.log("Contract verified successfully\n");
   } catch (error) {
-    console.log("  Stage setup failed:", error.message);
+    console.log("Verification failed:", error.message);
+    console.log("You can verify manually with:");
+    console.log(`npx hardhat verify --network ${net.name} ${await presale.getAddress()} "${recorder}"\n`);
+  }
+  
+  await writeArtifact("presale", net, presale, { recorder, admin });
+}
+
+async function deployWithPrettyGas (contractName, Factory, args = [], extra = {}) {
+  const fee = await ethers.provider.getFeeData();
+  const opts = fee.maxFeePerGas
+    ? { maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas }
+    : { gasPrice: fee.gasPrice };
+  const contract = await Factory.deploy(...args, { ...opts, ...extra });
+  console.log(`Deploying ${contractName}…`);
+  const receipt = await contract.deploymentTransaction().wait();
+  console.log(`${contractName} at ${await contract.getAddress()}`);
+  console.log(`gas used ${receipt.gasUsed.toString()}  @  ${ethers.formatUnits(receipt.gasPrice, "gwei")} gwei\n`);
+  return contract;
+}
+
+async function setupRoles (presale, recorder, admin, deployer) {
+  console.log("Checking roles…");
+  const ADMIN    = await presale.DEFAULT_ADMIN_ROLE();
+  const RECORDER = await presale.RECORDER_ROLE();
+
+  if (!(await presale.hasRole(RECORDER, recorder))) {
+    await (await presale.grantRole(RECORDER, recorder)).wait();
+    console.log(`recorder ${recorder}`);
+  }
+  if (admin && admin.toLowerCase() !== deployer.address.toLowerCase()) {
+    await (await presale.grantRole(ADMIN, admin)).wait();
+    console.log(`admin    ${admin}`);
   }
 }
 
-async function verifyPresaleDetails(presale) {
-  console.log("");
-  console.log("Presale Details:");
-  const maxPurchase = await presale.MAX_PURCHASE_USDT();
-  const maxTotal = await presale.MAX_TOTAL_USDT();
-  const referrerBonus = await presale.REFERRER_BONUS_BPS();
-  const refereeBonus = await presale.REFEREE_BONUS_BPS();
-  
-  console.log(`  Max Purchase: ${ethers.formatUnits(maxPurchase, 6)} USDT`);
-  console.log(`  Max Raise: ${ethers.formatUnits(maxTotal, 6)} USDT`);
-  console.log(`  Referrer Bonus: ${Number(referrerBonus) / 100}%`);
-  console.log(`  Referee Bonus: ${Number(refereeBonus) / 100}%`);
+async function configureStage1 (presale) {
+  console.log("\nConfiguring Stage 1 …");
+  // Stage 1: $0.000270 per token, 200,000,000 tokens allocation
+  const stage1 = STAGES.find(cfg => cfg.stage === 1);
+  const price = ethers.parseUnits(stage1.price, 6);
+  const alloc = ethers.parseUnits(stage1.tokens, 18);
+  await presale.configureStage(1, price, alloc);
+  console.log(`Stage 1 configured @ $${stage1.price} with ${stage1.tokens} tokens\n`);
 }
 
-async function createTokenDeploymentInfo(token, receipt, network, treasuryAddress) {
-  const name = await token.name();
-  const symbol = await token.symbol();
-  const decimals = await token.decimals();
-  const totalSupply = await token.totalSupply();
-  const maxSupply = await token.getMaxSupply();
-  const owner = await token.owner();
-  const tokenAddress = await token.getAddress();
+async function dumpTokenInfo (token, treasury) {
+  console.log("\nℹToken summary");
+  console.log(`   name       : ${await token.name()}`);
+  console.log(`   symbol     : ${await token.symbol()}`);
+  console.log(`   totalSupply: ${ethers.formatUnits(await token.totalSupply(), 18)}`);
+  console.log(`   treasury   : ${treasury}\n`);
+}
 
-  return {
-    type: 'token',
-    network: network.name,
-    chainId: Number(network.chainId),
-    token: {
-      name, symbol, decimals: Number(decimals),
-      address: tokenAddress,
-      totalSupply: totalSupply.toString(),
-      maxSupply: maxSupply.toString(),
-      owner, treasury: treasuryAddress,
-      deploymentHash: token.deploymentTransaction().hash,
-      blockNumber: receipt.blockNumber,
-      gasUsed: receipt.gasUsed.toString(),
-      deploymentCost: ethers.formatEther(receipt.gasUsed * receipt.gasPrice)
-    },
+async function dumpPresaleInfo (presale) {
+  console.log("ℹPresale constants");
+  console.log(`   MAX_PURCHASE_USDT : ${ethers.formatUnits(await presale.MAX_PURCHASE_USDT(), 6)}`);
+  console.log(`   MAX_TOTAL_USDT    : ${ethers.formatUnits(await presale.MAX_TOTAL_USDT(), 6)}`);
+  const referrerBps = await presale.REFERRER_BONUS_BPS();
+  const refereeBps = await presale.REFEREE_BONUS_BPS();
+  console.log(`   REFERRER_BONUS    : ${Number(referrerBps) / 100}% (${referrerBps} BPS)`);
+  console.log(`   REFEREE_BONUS     : ${Number(refereeBps) / 100}% (${refereeBps} BPS)`);
+  console.log(`   BASIS_POINTS      : ${await presale.BASIS_POINTS()}\n`);
+}
+
+async function writeArtifact (type, net, contract, extra) {
+  const outDir = path.join(__dirname, "..", "deployments");
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+  const file = path.join(outDir, `${type}-${net.name}-${Date.now()}.json`);
+  const data = {
+    type,
+    network  : net.name,
+    chainId  : Number(net.chainId),
+    address  : await contract.getAddress(),
+    txHash   : contract.deploymentTransaction().hash,
+    block    : (await contract.deploymentTransaction().wait()).blockNumber,
+    ...extra,
     timestamp: new Date().toISOString()
   };
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  console.log(`Deployment artifact saved → ${file}\n`);
 }
 
-async function createPresaleDeploymentInfo(presale, receipt, network, recorderAddress, adminAddress) {
-  const presaleAddress = await presale.getAddress();
-  const maxPurchase = await presale.MAX_PURCHASE_USDT();
-  const maxTotal = await presale.MAX_TOTAL_USDT();
-
-  return {
-    type: 'presale',
-    network: network.name,
-    chainId: Number(network.chainId),
-    presale: {
-      address: presaleAddress,
-      recorder: recorderAddress,
-      admin: adminAddress,
-      maxPurchaseUSDT: maxPurchase.toString(),
-      maxTotalUSDT: maxTotal.toString(),
-      deploymentHash: presale.deploymentTransaction().hash,
-      blockNumber: receipt.blockNumber,
-      gasUsed: receipt.gasUsed.toString(),
-      deploymentCost: ethers.formatEther(receipt.gasUsed * receipt.gasPrice)
-    },
-    timestamp: new Date().toISOString()
-  };
-}
-
-async function saveDeploymentInfo(deploymentInfo, filePrefix) {
-  const deploymentsDir = path.join(__dirname, "../deployments");
-  if (!fs.existsSync(deploymentsDir)) {
-    fs.mkdirSync(deploymentsDir, { recursive: true });
-  }
-
-  const fileName = `${filePrefix}-${Date.now()}.json`;
-  const filePath = path.join(deploymentsDir, fileName);
-  fs.writeFileSync(filePath, JSON.stringify(deploymentInfo, null, 2));
-  
-  console.log("");
-  console.log("Deployment saved:", filePath);
-}
-
-function logNextSteps(network, contractAddress, contractType, roleAddress) {
-  console.log("");
-  console.log("Next Steps:");
-  console.log("1. Add to .env file:");
-  
-  if (contractType === 'token') {
-    console.log(`   ETHEREUM_TOKEN_ADDRESS=${contractAddress}`);
-    console.log(`   ETHEREUM_NETWORK=${network.name}`);
-  } else {
-    console.log(`   POLYGON_PRESALE_ADDRESS=${contractAddress}`);
-    console.log(`   POLYGON_NETWORK=${network.name}`);
-  }
-  
-  console.log("");
-  console.log("2. Verify contract:");
-  const verifyArgs = contractType === 'token' ? `"${roleAddress}"` : `"${roleAddress}"`;
-  console.log(`   npx hardhat verify --network ${network.name} ${contractAddress} ${verifyArgs}`);
-  
-  console.log("");
-  if (contractType === 'token') {
-    console.log("3. Deploy presale on Polygon:");
-    console.log("   npx hardhat run scripts/deploy-presale.js --network polygon");
-  } else {
-    console.log("3. Configure your backend with the presale address");
-    console.log("4. Test with small purchases before going live");
-  }
-  
-  console.log("");
-  console.log("Deployment completed successfully!");
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});

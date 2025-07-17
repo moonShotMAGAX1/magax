@@ -104,14 +104,14 @@ Execute the full test suite to verify everything works correctly:
 npx hardhat test
 ```
 
-Expected output: All 73 tests should pass.
+Expected output: All 92 tests should pass.
 
 ### 3. Deploy Token to Ethereum Testnet (Sepolia)
 
 Deploy the MAGAX token to Ethereum Sepolia testnet first:
 
 ```bash
-npx hardhat run scripts/deploy-token.js --network sepolia
+TREASURY_ADDRESS=0x... npx hardhat run scripts/deploy.js --network sepolia
 ```
 
 ### 4. Deploy Presale to Polygon Testnet (Mumbai)
@@ -119,7 +119,7 @@ npx hardhat run scripts/deploy-token.js --network sepolia
 Deploy the presale contract to Polygon Mumbai testnet:
 
 ```bash
-npx hardhat run scripts/deploy-presale.js --network polygonMumbai
+RECORDER_ADDRESS=0x... npx hardhat run scripts/deploy.js --network polygonMumbai
 ```
 
 ### 5. Verify Contracts
@@ -139,18 +139,18 @@ npx hardhat verify --network polygonMumbai <PRESALE_CONTRACT_ADDRESS> <RECORDER_
 **Deploy Token to Ethereum Mainnet:**
 
 ```bash
-npx hardhat run scripts/deploy-token.js --network mainnet
+TREASURY_ADDRESS=0x... npx hardhat run scripts/deploy.js --network mainnet
 ```
 
 **Deploy Presale to Polygon Mainnet:**
 
 ```bash
-npx hardhat run scripts/deploy-presale.js --network polygon
+RECORDER_ADDRESS=0x... npx hardhat run scripts/deploy.js --network polygon
 ```
 
-## Alternative: Auto-Detection Deployment
+## Unified Deployment Script
 
-You can also use the smart deployment script that automatically detects the network:
+The deployment script automatically detects the network type and deploys the appropriate contract:
 
 ```bash
 # For Ethereum networks (deploys token)
