@@ -41,13 +41,13 @@ The MoonShot MAGAX presale system consists of two main contracts:
 
 ### Testnet (Sepolia)
 
-- MoonShotMAGAX: `TBD`
-- MAGAXPresaleReceipts: `TBD`
+- MoonShotMAGAX: `ETH Sepolia`
+- MAGAXPresaleReceipts: `Polygon Amoy`
 
 ### Mainnet
 
-- MoonShotMAGAX: `TBD`
-- MAGAXPresaleReceipts: `TBD`
+- MoonShotMAGAX: `ETH`
+- MAGAXPresaleReceipts: `Polygon`
 
 ## License
 
