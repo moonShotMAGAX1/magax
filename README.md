@@ -40,11 +40,13 @@ The presale receipt system provides:
 
 - **Transparent tracking** of all presale purchases
 - **On-chain receipts** showing USDT paid and MAGAX allocated
-- **Role-based security** with PRESALE_MANAGER_ROLE for authorized purchase recording
+- **Role-based security** with RECORDER_ROLE for authorized purchase recording
 - **Pausable functionality** for emergency control
 - **Multi-purchase support** per buyer
-- **50-stage presale system** with configurable pricing
+- **50-stage presale system** with configurable pricing (stages configured as needed)
 - **Referral program** with 7% referrer and 5% referee bonuses
+- **Manual stage transitions** for precise admin control
+- **Comprehensive edge case handling** and audit-ready security
 
 ### Key Features
 
@@ -75,10 +77,19 @@ cp env.example .env
 Required environment variables:
 
 ```env
-PRIVATE_KEY=your_private_key
+# Ethereum (Token Deployment)
+PRIVATE_KEY=your_ethereum_private_key
 SEPOLIA_RPC_URL=https://sepolia.infura.io/v3/your_project_id
 TREASURY_ADDRESS=0xYourTreasuryWalletAddress
+
+# Polygon (Presale Deployment)  
+POLYGON_DEPLOYER_PRIVATE_KEY=your_polygon_private_key
+POLYGON_RPC_URL=https://polygon-amoy.infura.io/v3/your_project_id
 RECORDER_ADDRESS=0xYourRecorderWalletAddress
+
+# Contract Verification
+ETHERSCAN_API_KEY=your_etherscan_api_key
+POLYGONSCAN_API_KEY=your_polygonscan_api_key
 ```
 
 ### 3. Compile Contracts
@@ -90,18 +101,81 @@ npx hardhat compile
 ### 4. Run Tests
 
 ```bash
-# Run all tests (73 tests including referral system)
+# Run all tests (92 comprehensive tests)
 npx hardhat test
 
 # Run only referral system tests
 npx hardhat test --grep "Referral System"
+
+# Run stage rollover tests
+npx hardhat test --grep "Stage Rollover"
+
+# Run edge case tests
+npx hardhat test --grep "Edge Cases"
 ```
 
-### 5. Deploy to Sepolia
+### 5. Deploy Contracts
+
+**Unified Deployment Script** - automatically detects network and deploys appropriate contract:
 
 ```bash
-npx hardhat run scripts/deploy.js --network sepolia
+# Deploy Token on Ethereum networks
+TREASURY_ADDRESS=0x... npx hardhat run scripts/deploy.js --network sepolia
+TREASURY_ADDRESS=0x... npx hardhat run scripts/deploy.js --network mainnet
+
+# Deploy Presale on Polygon networks  
+RECORDER_ADDRESS=0x... npx hardhat run scripts/deploy.js --network amoy
+RECORDER_ADDRESS=0x... npx hardhat run scripts/deploy.js --network polygon
 ```
+
+**Features:**
+
+- ✅ Auto-detects network type (Ethereum vs Polygon)
+- ✅ Configures Stage 1 automatically (additional stages added as needed)
+- ✅ Sets up roles and permissions
+- ✅ Activates Stage 1 automatically
+- ✅ Verifies contracts on block explorers
+- ✅ Saves deployment artifacts
+
+### 6. Contract Verification
+
+Contracts are automatically verified during deployment. If verification fails, you can manually verify:
+
+```bash
+# Verify Token on Ethereum
+npx hardhat verify --network sepolia <TOKEN_ADDRESS> "<TREASURY_ADDRESS>"
+
+# Verify Presale on Polygon  
+npx hardhat verify --network amoy <PRESALE_ADDRESS> "<RECORDER_ADDRESS>"
+```
+
+### 7. Configure Additional Stages (Optional)
+
+The deployment script only configures Stage 1. To add more stages as your presale progresses:
+
+```javascript
+// Example: Configure Stage 2 (admin only)
+await presaleContract.configureStage(
+    2,                                    // Stage number
+    ethers.parseUnits("0.000293", 6),    // $0.000293 per MAGAX (Stage 2 price)
+    ethers.parseUnits("210400000", 18)   // 210.4M MAGAX allocation (Stage 2)
+);
+
+// Activate Stage 2 when Stage 1 is complete
+await presaleContract.activateStage(2);
+```
+
+**Benefits of this approach:**
+
+- ✅ Lower deployment gas costs
+- ✅ Flexible stage management
+- ✅ Configure stages based on market conditions
+- ✅ Reduced contract initialization complexity
+
+**Verification Links:**
+
+- Ethereum: Etherscan
+- Polygon: PolygonScan + Sourcify
 
 ---
 
@@ -110,10 +184,50 @@ npx hardhat run scripts/deploy.js --network sepolia
 The project includes comprehensive tests covering:
 
 - Contract deployment and initialization
-- Purchase recording functionality
+- Purchase recording functionality  
 - Access control and security
 - Pause/unpause mechanisms
 - Edge cases and error handling
+- **Stage rollover functionality** with manual transitions
+- **Referral system** with bonus calculations
+- **Price validation** with rounding tolerance
+- **Audit-ready security measures**
+
+### Test Categories
+
+#### Core Functionality (45+ tests)
+
+- Contract deployment and configuration
+- Purchase recording with validation
+- Role-based access control
+- Emergency pause/unpause
+
+#### Referral System (8 tests)
+
+- Referral bonus calculations (7% referrer, 5% referee)
+- Referral relationship management
+- Edge cases and validation
+
+#### Stage Management (11 tests)
+
+- Manual stage transitions
+- Stage completion detection
+- Price enforcement across rollovers
+- Multi-stage referral tracking
+
+#### Edge Cases (20+ tests)
+
+- Price tolerance validation
+- Maximum purchase limit
+- Stage allocation boundaries
+- Overflow protection
+
+#### Security & Audit (10+ tests)
+
+- Reentrancy protection
+- Overflow prevention
+- Event emission verification
+- Role security validation
 
 Run all tests:
 
@@ -136,6 +250,51 @@ npx hardhat test
 - Pausable functionality for emergency stops
 - Input validation and proper event emission
 - Comprehensive test coverage
+- **Reentrancy protection** on all state-changing functions
+- **Overflow-safe arithmetic** with 256-bit calculations
+- **Price validation** with ±1 USDT tolerance for rounding
+- **Manual stage transitions** for precise admin control
+- **Enhanced finalization** with automatic pause protection
+- **Audit-ready event emissions** with indexed fields
+
+---
+
+## 🛡️ Recent Security Enhancements
+
+### Audit Fixes Implemented
+
+1. **Enhanced Reentrancy Protection**
+   - Added `nonReentrant` to `recordPurchaseWithReferral`
+   - Symmetrical protection across all purchase methods
+
+2. **Overflow Prevention**
+   - Fixed price validation to use 256-bit arithmetic
+   - Prevents silent overflow with large input values
+
+3. **Enhanced Finalization**
+   - `finalise()` now automatically pauses contract
+   - Prevents accidental RECORDER_ROLE activity after finalization
+
+4. **Improved Analytics**
+   - Added indexed buyer field to `ReferralBonusAwarded` event
+   - Better event filtering and tracking capabilities
+
+5. **Gas Optimization**
+   - Optimized `ReferralInfo.totalReferrals` from uint128 to uint32
+   - Reduced storage costs while maintaining sufficient capacity
+
+6. **Documentation Updates**
+   - Updated price tolerance comments for clarity
+   - Added NatSpec for manual stage management design
+
+### Production Readiness
+
+- ✅ **Comprehensive Testing**: 90+ tests covering all scenarios
+- ✅ **Audit Fixes**: All security recommendations implemented
+- ✅ **Gas Optimized**: Efficient storage and computation
+- ✅ **Event Monitoring**: Complete audit trail with indexed events
+- ✅ **Manual Control**: Intentional design for maximum admin flexibility
+- ✅ **Edge Case Handling**: Robust validation and error handling
 
 ---
 
@@ -144,16 +303,21 @@ npx hardhat test
 ```text
 magax/
 ├── contracts/
-│   ├── MoonShotMAGAX.sol       # ERC-20 token contract
-│   └── PreSaleOnChain.sol      # Presale receipt tracking
+│   ├── MoonShotMAGAX.sol            # ERC-20 token contract
+│   └── PreSaleOnChain.sol           # Presale receipt tracking
 ├── scripts/
-│   └── deploy.js               # Deployment script
+│   └── deploy.js                    # Unified deployment script
 ├── test/
-│   └── MAGAXPresaleReceipts.test.js  # Test suite
-├── hardhat.config.js           # Hardhat configuration
-├── package.json                # Dependencies
-├── .env                        # Environment variables (not committed)
-└── env.example                 # Environment template
+│   └── MAGAXPresaleReceipts.test.js # Comprehensive test suite (90+ tests)
+├── docs/
+│   ├── deployment-guide.md          # Deployment documentation
+│   └── DOCUMENTATION_SUMMARY.md     # Project documentation summary
+├── deployments/                     # Auto-generated deployment artifacts
+├── .github/workflows/               # CI/CD automation
+├── hardhat.config.js                # Hardhat configuration
+├── package.json                     # Dependencies and scripts
+├── .env                             # Environment variables (not committed)
+├── env.example                      # Environment template
 ```
 
 ---
@@ -176,17 +340,154 @@ presaleReceipts.recordPurchase(
 ```solidity
 // Anyone can view receipts
 Receipt[] memory receipts = presaleReceipts.getReceipts(buyerAddress);
+
+// Paginated view for users with many purchases  
+Receipt[] memory page = presaleReceipts.getReceiptsPaginated(buyerAddress, 0, 50);
+```
+
+### Stage Management
+
+```solidity
+// Configure a new stage (admin only)
+presaleReceipts.configureStage(
+    2,                    // Stage number
+    2000,                 // Price: 0.002 USDT per MAGAX (6 decimals)
+    ethers.parseUnits("1000000", 18)  // 1M MAGAX allocation
+);
+
+// Manually activate stage (admin only)
+presaleReceipts.activateStage(2);
+
+// Get current stage information
+(uint8 stage, uint128 price, uint128 allocated, uint128 sold, uint128 remaining, bool active) 
+    = presaleReceipts.getCurrentStageInfo();
+```
+
+### Referral Purchases
+
+```solidity
+// Record purchase with referral bonuses
+presaleReceipts.recordPurchaseWithReferral(
+    buyerAddress,    // Buyer (gets 5% bonus)
+    usdtAmount,      // USDT paid
+    magaxAmount,     // Base MAGAX amount
+    referrerAddress  // Referrer (gets 7% bonus)
+);
 ```
 
 ---
 
 ## Gas Usage
 
-| Function | Gas Usage |
-|----------|-----------|
-| Deploy Contract | ~1.05M gas |
-| Record Purchase | ~83k-163k gas |
-| Pause/Unpause | ~25k-47k gas |
+| Function | Gas Usage | Notes |
+|----------|-----------|-------|
+| Deploy Token | ~1.2M gas | MoonShotMAGAX on Ethereum |
+| Deploy Presale | ~2.1M gas | MAGAXPresaleReceipts on Polygon |
+| Record Purchase | ~85k-170k gas | Varies with stage configuration |
+| Record Referral Purchase | ~120k-200k gas | Includes bonus calculations |
+| Configure Stage | ~45k gas | One-time per stage |
+| Activate Stage | ~30k gas | Manual stage transitions |
+| Pause/Unpause | ~25k-47k gas | Emergency controls |
+
+### ⚠️ Gas Considerations for Dynamic Arrays
+
+The `userReceipts` mapping stores dynamic arrays that can grow without bound as users make multiple purchases. Key considerations:
+
+- **Pagination**: Use `getReceiptsPaginated()` for users with many purchases to avoid gas limit issues
+- **Recommended Limits**: Consider implementing per-user purchase frequency limits in your frontend/backend
+- **Gas Cost Growth**: Each additional receipt increases gas costs for array operations
+- **Best Practice**: For high-frequency users, consider batching multiple small purchases into larger ones
+
+**Frontend Integration**: Always use pagination when displaying user purchase history for accounts with >100 purchases.
+
+---
+
+## 📊 Event Monitoring for Auditors
+
+### Role Management Events
+
+The contract emits automatic OpenZeppelin events for role management that auditors should monitor:
+
+#### `RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole)`
+
+- **Purpose**: Tracks when the admin role for a specific role is changed
+- **Monitoring**: Critical for security audits - watch for unexpected admin role changes
+- **Tools**: View in Tenderly, PolygonScan, or Ethereum explorers
+- **Security**: Ensures transparency in role hierarchy modifications
+
+#### `RoleGranted(bytes32 indexed role, address indexed account, address indexed sender)`
+
+- **Purpose**: Tracks when roles are granted to addresses
+- **Monitoring**: Monitor RECORDER_ROLE and DEFAULT_ADMIN_ROLE grants
+
+#### `RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender)`  
+
+- **Purpose**: Tracks when roles are revoked from addresses
+- **Monitoring**: Important for access control audit trail
+
+### Presale Stage Events
+
+#### `StageActivated(uint8 indexed stage, address indexed operator)`
+
+- **Purpose**: Tracks presale stage transitions with the operator who made the change
+- **Monitoring**: Critical for post-mortems and stage management audit
+- **Parameters**:
+  - `stage`: The stage number that was activated (1-50)
+  - `operator`: The address that activated the stage (must have DEFAULT_ADMIN_ROLE)
+- **Use Cases**:
+  - Verify proper stage progression
+  - Identify who activated each stage for accountability
+  - Timeline analysis for presale phases
+
+#### `StageConfigured(uint8 indexed stage, uint128 pricePerToken, uint128 tokensAllocated)`
+
+- **Purpose**: Tracks when stages are configured with pricing and allocation
+- **Monitoring**: Verify stage parameters match intended presale design
+
+#### `StageCompleted(uint8 indexed stage, uint128 tokensSold)`
+
+- **Purpose**: Automatic event when a stage sells out completely
+- **Monitoring**: Track presale progression and success metrics
+
+### Purchase Tracking Events
+
+#### `PurchaseRecorded(address indexed buyer, uint128 usdt, uint128 magax, uint40 time, uint8 indexed stage, uint256 totalUserPurchases, bool isNewBuyer)`
+
+- **Purpose**: Comprehensive purchase tracking
+- **Monitoring**: Primary event for purchase analytics and verification
+
+#### `ReferralBonusAwarded(address indexed referrer, address indexed referee, uint128 referrerBonus, uint128 refereeBonus, uint8 stage)`
+
+- **Purpose**: Tracks referral bonus distributions
+- **Edge Case Handling**: Referrer subsequent purchases don't double-count bonuses
+
+### Emergency Events
+
+#### `Paused(address account)` / `Unpaused(address account)`
+
+- **Purpose**: OpenZeppelin pausable events
+- **Monitoring**: Track emergency pause/unpause actions
+
+### Audit Monitoring Setup
+
+```solidity
+// Example event filter for Tenderly/Ethers.js monitoring
+const eventFilters = {
+  roleChanges: contract.filters.RoleAdminChanged(),
+  roleGrants: contract.filters.RoleGranted(),
+  stageActivations: contract.filters.StageActivated(),
+  purchases: contract.filters.PurchaseRecorded(),
+  emergencyPause: contract.filters.Paused()
+};
+```
+
+### Critical Monitoring Points
+
+1. **Role Security**: Monitor all role-related events for unauthorized changes
+2. **Stage Progression**: Verify stage activations follow expected timeline
+3. **Purchase Validation**: Cross-reference purchase events with off-chain records
+4. **Emergency Actions**: Alert on pause/unpause events
+5. **Referral Integrity**: Verify referral bonuses are not double-counted
 
 ---
 

@@ -1,0 +1,200 @@
+name: Presale Contract Pipeline
+
+on:
+  pull_request:
+    branches: [develop, main]
+    types: [closed]            # fires only when the PR is merged/closed
+    paths:
+      - 'contracts/PreSaleOnChain.sol'
+      - 'scripts/deploy*'
+      - 'test/**'
+      - 'hardhat.config.js'
+
+  push:
+    tags:
+      - 'presale-v*'           # e.g. presale-v1.0.0
+
+env:
+  NODE_VERSION: '18'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test-and-security:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    name: Test + Static Analysis
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npx hardhat compile
+
+      - name: Run tests
+        run: npx hardhat test
+
+      - name: Gas report (non-blocking)
+        run: REPORT_GAS=true npx hardhat test || true
+
+      - name: Slither static analysis
+        uses: crytic/slither-action@v0.3.0
+        with:
+          slither-args: >
+            --filter-paths "node_modules/|test/"
+            --exclude naming-convention,external-function,low-level-calls
+            --detect-horizon
+        continue-on-error: true
+
+      - name: Mythril symbolic analysis
+        run: |
+          pipx install mythril
+          myth analyze contracts/PreSaleOnChain.sol --solv 0.8.24 --max-depth 8 || true
+        continue-on-error: true
+
+  deploy-testnet:
+    needs: test-and-security
+    if: |
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'develop'
+    runs-on: ubuntu-latest
+    name: 🚀 Deploy - Amoy Test-net
+    environment: testnet
+
+    outputs:
+      presale-address: ${{ steps.deploy.outputs.address }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npx hardhat compile
+
+      - name: Deploy to Amoy
+        id: deploy
+        run: |
+          echo "🔗 network: amoy"
+          ADDR=$(npx hardhat run scripts/deploy.js --network amoy | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+          echo "address=$ADDR" >> "$GITHUB_OUTPUT"
+        env:
+          POLYGON_DEPLOYER_PRIVATE_KEY: ${{ secrets.POLYGON_DEPLOYER_PRIVATE_KEY }}
+          POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
+          RECORDER_ADDRESS: ${{ secrets.RECORDER_ADDRESS }}
+
+      - name: Verify on Polygonscan
+        run: |
+          sleep 20
+          npx hardhat verify --network amoy \
+             ${{ steps.deploy.outputs.address }} \
+             ${{ secrets.RECORDER_ADDRESS }} || true
+        env:
+          POLYGONSCAN_API_KEY: ${{ secrets.POLYGONSCAN_API_KEY }}
+
+      - name: Commit deployment record
+        run: |
+          mkdir -p deployments/amoy
+          echo "${{ steps.deploy.outputs.address }}" > deployments/amoy/latest.txt
+          git config user.email "action@github.com"
+          git config user.name  "GitHub Actions"
+          git add deployments/amoy
+          git commit -m "ci: Amoy deploy ${{ steps.deploy.outputs.address }}" || true
+          git push origin develop || true
+
+  deploy-mainnet:
+    if: startsWith(github.ref, 'refs/tags/presale-v')
+    needs: test-and-security
+    runs-on: ubuntu-latest
+    name: 🔐 Deploy - Polygon Main-net
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Compile (0.8.24 reproducible)
+        run: npx hardhat compile
+
+      - name: Gas sanity check
+        run: node scripts/check-gas-price.js --network polygon
+        env:
+          POLYGON_RPC_URL: ${{ secrets.POLYGON_MAINNET_RPC_URL }}
+
+      - name: Deploy to Polygon
+        id: deploy
+        run: |
+          ADDR=$(npx hardhat run scripts/deploy.js --network polygon \
+              | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+          echo "address=$ADDR" >> "$GITHUB_OUTPUT"
+        env:
+          POLYGON_DEPLOYER_PRIVATE_KEY: ${{ secrets.POLYGON_MAINNET_PRIVATE_KEY }}
+          POLYGON_RPC_URL: ${{ secrets.POLYGON_MAINNET_RPC_URL }}
+          RECORDER_ADDRESS: ${{ secrets.MAINNET_RECORDER_ADDRESS }}
+
+      - name: Verify on Polygonscan
+        run: |
+          sleep 60
+          npx hardhat verify --network polygon \
+             "${{ steps.deploy.outputs.address }}" \
+             ${{ secrets.MAINNET_RECORDER_ADDRESS }}
+        env:
+          POLYGONSCAN_API_KEY: ${{ secrets.POLYGONSCAN_API_KEY }}
+
+      - name: Commit deployment artefacts
+        run: |
+          mkdir -p deployments/mainnet
+          echo "${{ steps.deploy.outputs.address }}" > deployments/mainnet/latest.txt
+          git config user.email "action@github.com"
+          git config user.name  "GitHub Actions (signed)"
+          git add deployments/mainnet
+          git commit -S -m "release: main-net deploy ${{ steps.deploy.outputs.address }}"
+          git push origin main
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

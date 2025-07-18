@@ -3,27 +3,14 @@ require("dotenv").config();
 
 module.exports = {
   solidity: {
-    compilers: [
-      {
-        version: "0.8.20",
-        settings: {
-          optimizer: {
-            enabled: true,
-            runs: 200
-          }
-        }
+    version: "0.8.30",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
       },
-      {
-        version: "0.8.23",
-        settings: {
-          optimizer: {
-            enabled: true,
-            runs: 200
-          },
-          viaIR: true
-        }
-      }
-    ]
+      viaIR: true
+    }
   },
   networks: {
     hardhat: {
@@ -32,7 +19,7 @@ module.exports = {
     // Ethereum Networks
     sepolia: {
       url: process.env.SEPOLIA_RPC_URL || "https://sepolia.infura.io/v3/",
-      accounts: process.env.DEPLOYER_PRIVATE_KEY ? [process.env.DEPLOYER_PRIVATE_KEY] : [],
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
       gasPrice: "auto"
     },
     mainnet: {
@@ -41,24 +28,30 @@ module.exports = {
       gasPrice: "auto"
     },
     // Polygon Networks
-    polygon: {
-      url: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",
+    amoy: {
+      url: process.env.POLYGON_RPC_URL || "https://polygon-amoy.infura.io/v3/3e5d87a372154785964c8beae188a399",
       accounts: process.env.POLYGON_DEPLOYER_PRIVATE_KEY ? [process.env.POLYGON_DEPLOYER_PRIVATE_KEY] : [],
-      gasPrice: "auto"
+      gasPrice: 50000000000, // 50 Gwei - above minimum requirement
+      maxFeePerGas: 60000000000, // 60 Gwei
+      maxPriorityFeePerGas: 50000000000, // 50 Gwei - above minimum
+      chainId: 80002
     },
-    polygonMumbai: {
-      url: process.env.POLYGON_MUMBAI_RPC_URL || "https://rpc-mumbai.maticvigil.com",
-      accounts: process.env.POLYGON_DEPLOYER_PRIVATE_KEY ? [process.env.POLYGON_DEPLOYER_PRIVATE_KEY] : [],
-      gasPrice: "auto"
-    }
   },
   etherscan: {
-    apiKey: {
-      mainnet: process.env.ETHERSCAN_API_KEY,
-      sepolia: process.env.ETHERSCAN_API_KEY,
-      polygon: process.env.POLYGONSCAN_API_KEY,
-      polygonMumbai: process.env.POLYGONSCAN_API_KEY
-    }
+    apiKey: process.env.POLYGONSCAN_API_KEY,
+    customChains: [
+      {
+        network: "amoy",
+        chainId: 80002,
+        urls: {
+          apiURL: "https://api-amoy.polygonscan.com/api",
+          browserURL: "https://amoy.polygonscan.com"
+        }
+      }
+    ]
+  },
+  sourcify: {
+    enabled: true
   },
   gasReporter: {
     enabled: process.env.REPORT_GAS !== undefined,

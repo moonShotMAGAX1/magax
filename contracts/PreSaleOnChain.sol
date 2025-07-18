@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.23;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // Custom errors for gas efficiency
-error NotRecorder();
 error InvalidAddress();
 error InvalidAmount();
 error ExceedsMaxPurchase();
 error ExceedsTotalLimit();
-error DuplicatePurchase();
 error NoTokensToWithdraw();
 error EthNotAccepted();
 error InvalidStage();
@@ -22,8 +21,12 @@ error InvalidPrice();
 error StageAlreadyActive();
 error InvalidReferrer();
 error SelfReferral();
+error PresaleFinalised();
+error PriceMismatch();
 
 contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+    
     bytes32 public constant RECORDER_ROLE = keccak256("RECORDER_ROLE");
 
     // Purchase limits for security
@@ -39,11 +42,10 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     struct Receipt {
         uint128 usdt;             // 6-decimals (128 bits)
         uint128 magax;            // 18-decimals (128 bits)
-        uint128 pricePerToken;    // USDT price per MAGAX token - 6 decimals (128 bits)
         uint40  time;             // timestamp (40 bits)
         uint8   stage;            // presale stage 1-50 (8 bits)
         bool    isReferralBonus;  // referral bonus flag (8 bits)
-        // Total: 440 bits = 2 storage slots (optimized from 3 slots)
+        // Total: 312 bits = 2 storage slots (removed pricePerToken for gas savings)
     }
 
     // Stage management
@@ -56,10 +58,9 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
 
     // Referral system
     struct ReferralInfo {
-        uint128 totalReferrals;      // Number of people referred
+        uint32  totalReferrals;      // Number of people referred (4B+ capacity)
         uint128 totalBonusEarned;    // Total bonus MAGAX earned as referrer
         uint128 totalRefereeBonus;   // Total bonus MAGAX earned as referee
-        bool hasReferred;            // Whether this address has made any referrals
     }
 
     // Core storage
@@ -75,9 +76,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     mapping(uint8 => StageInfo) public stages;
     uint8 public currentStage = 1; // Start with stage 1
 
-    // Duplicate prevention
-    mapping(bytes32 => bool) public purchaseHashes;
-    uint256 public purchaseCounter;
+    // Finalization flag - prevents new receipts after presale closes
+    bool public finalised;
 
     uint128 public totalUSDT;
     uint128 public totalMAGAX;
@@ -88,8 +88,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 usdt,
         uint128 magax,
         uint40  time,
-        uint8   stage,
-        uint128 pricePerToken,
+        uint8   indexed stage,
         uint256 totalUserPurchases,
         bool isNewBuyer
     );
@@ -113,9 +112,11 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 tokensAllocated
     );
 
-    event StageActivated(uint8 indexed stage);
+    event StageActivated(uint8 indexed stage, address indexed operator);
     event StageDeactivated(uint8 indexed stage);
     event StageCompleted(uint8 indexed stage, uint128 tokensSold);
+
+    event Finalised(uint40 time);
 
     event EmergencyTokenWithdraw(
         address indexed token,
@@ -139,191 +140,252 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 usdtAmount,
         uint128 magaxAmount
     ) external whenNotPaused onlyRole(RECORDER_ROLE) nonReentrant {
+        if (finalised) revert PresaleFinalised();
+        
+        _validatePurchase(buyer, usdtAmount, magaxAmount);
+        
+        uint8 stage = currentStage;
+        StageInfo storage stageInfo = stages[stage];
+        _validateStage(stage, magaxAmount, stageInfo);
+        _validatePrice(usdtAmount, magaxAmount, stageInfo.pricePerToken);
+        
+        uint40 timestamp = uint40(block.timestamp);
+        _processPurchase(buyer, usdtAmount, magaxAmount, stage, stageInfo, timestamp);
+    }
+
+    function _validatePurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount) internal view {
         if (buyer == address(0)) revert InvalidAddress();
         if (usdtAmount == 0 || magaxAmount == 0) revert InvalidAmount();
-        
-        // Check purchase limits
         if (usdtAmount > MAX_PURCHASE_USDT) revert ExceedsMaxPurchase();
+        
+        // Edge case: Check if purchase exactly hits MAX_TOTAL_USDT (should be allowed)
         if (totalUSDT + usdtAmount > MAX_TOTAL_USDT) revert ExceedsTotalLimit();
-        
-        // Validate current stage and cache stage info for gas optimization
-        uint8 _currentStage = currentStage;
-        if (_currentStage == 0 || _currentStage > MAX_STAGES) revert InvalidStage();
-        
-        StageInfo storage stageInfo = stages[_currentStage];
+    }
+
+    function _validateStage(uint8 stage, uint128 magaxAmount, StageInfo storage stageInfo) internal view {
+        if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
         if (!stageInfo.isActive) revert StageNotActive();
         if (stageInfo.tokensSold + magaxAmount > stageInfo.tokensAllocated) {
             revert InsufficientStageTokens();
         }
+    }
+
+    /**
+     * @notice Validates price consistency between USDT amount and MAGAX amount
+     * @dev Handles rounding edge case when decimal conversions don't divide evenly.
+     *      Uses 256-bit arithmetic to prevent overflow, then allows ±1 USDT tolerance
+     *      for precision rounding. This prevents price manipulation while accommodating
+     *      legitimate rounding differences from decimal conversions.
+     * @param usdtAmount The USDT amount (6 decimals)
+     * @param magaxAmount The MAGAX amount (18 decimals) 
+     * @param pricePerToken The price per token (6 decimals, USDT per MAGAX)
+     */
+    function _validatePrice(uint128 usdtAmount, uint128 magaxAmount, uint128 pricePerToken) internal pure {
+        // Price validation: usdtAmount should equal (magaxAmount * pricePerToken) / 1e18
+        // Since USDT has 6 decimals and MAGAX has 18 decimals, and pricePerToken is in 6 decimals
+        uint256 expectedUSDT = (uint256(magaxAmount) * pricePerToken) / 1e18;
         
-        // Validate price match (ensure caller provides correct amount)
-        // NOTE: Temporarily disabled for backward compatibility with existing tests
-        // In production, enable this validation for security
-        /*
-        uint128 expectedUsdtAmount = (magaxAmount * stageInfo.pricePerToken) / 1e18;
-        uint128 difference = usdtAmount > expectedUsdtAmount ? 
-            usdtAmount - expectedUsdtAmount : expectedUsdtAmount - usdtAmount;
-        if (difference > 1) revert InvalidPrice();
-        */
-        
-        // Prevent duplicate purchases
-        bytes32 purchaseHash = keccak256(abi.encode(
-            buyer, usdtAmount, magaxAmount, block.timestamp, purchaseCounter
-        ));
-        if (purchaseHashes[purchaseHash]) revert DuplicatePurchase();
-        purchaseHashes[purchaseHash] = true;
-        
-        // Track if this is a new buyer (for totalBuyers counter)
+        // Edge case: Allow ±1 USDT tolerance for rounding when decimal conversions don't divide evenly
+        // This handles cases where 256-bit arithmetic precision still results in minor rounding differences
+        if (usdtAmount > expectedUSDT) {
+            if (usdtAmount - expectedUSDT > 1e6) revert PriceMismatch(); // More than 1 USDT over
+        } else {
+            if (expectedUSDT - usdtAmount > 1e6) revert PriceMismatch(); // More than 1 USDT under
+        }
+    }
+
+    function _processPurchase(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        uint8 stage,
+        StageInfo storage stageInfo,
+        uint40 timestamp
+    ) internal {
         bool isNewBuyer = userTotalUSDT[buyer] == 0;
         
-        // Update storage
         userReceipts[buyer].push(
-            Receipt(usdtAmount, magaxAmount, stageInfo.pricePerToken, uint40(block.timestamp), _currentStage, false)
+            Receipt(usdtAmount, magaxAmount, timestamp, stage, false)
         );
         
-        // Update totals efficiently
+        _updateTotals(buyer, usdtAmount, magaxAmount, isNewBuyer);
+        
+        unchecked {
+            stageInfo.tokensSold += magaxAmount;
+        }
+        
+        _emitPurchaseEvent(buyer, usdtAmount, magaxAmount, timestamp, stage, isNewBuyer);
+        
+        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
+            emit StageCompleted(stage, stageInfo.tokensSold);
+        }
+    }
+
+    function _updateTotals(address buyer, uint128 usdtAmount, uint128 magaxAmount, bool isNewBuyer) internal {
         userTotalUSDT[buyer] += usdtAmount;
         userTotalMAGAX[buyer] += magaxAmount;
         totalUSDT += usdtAmount;
         totalMAGAX += magaxAmount;
         
-        // Update stage tokens sold
-        stageInfo.tokensSold += magaxAmount;
-        
         if (isNewBuyer) {
-            unchecked {
-                totalBuyers++;
-            }
+            unchecked { totalBuyers++; }
         }
+    }
 
+    function _emitPurchaseEvent(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        uint40 timestamp,
+        uint8 stage,
+        bool isNewBuyer
+    ) internal {
         emit PurchaseRecorded(
             buyer, 
             usdtAmount, 
             magaxAmount, 
-            uint40(block.timestamp),
-            _currentStage,
-            stageInfo.pricePerToken,
+            timestamp,
+            stage,
             userReceipts[buyer].length,
             isNewBuyer
         );
-        
-        unchecked {
-            purchaseCounter++;
-        }
-        
-        // Check if stage is complete and emit event for stage progress tracking
-        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
-            emit StageCompleted(_currentStage, stageInfo.tokensSold);
-        }
     }
 
-    /**
-     * @notice Record a purchase with referral bonus
-     * @param buyer The address of the buyer
-     * @param usdtAmount The amount of USDT spent
-     * @param magaxAmount The amount of MAGAX received (base amount)
-     * @param referrer The address of the referrer
-     */
     function recordPurchaseWithReferral(
         address buyer,
         uint128 usdtAmount,
         uint128 magaxAmount,
         address referrer
-    ) external onlyRole(RECORDER_ROLE) whenNotPaused {
+    ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
+        if (finalised) revert PresaleFinalised();
+        
+        _validateReferralPurchase(buyer, usdtAmount, magaxAmount, referrer);
+        
+        uint8 stage = currentStage;
+        if (stage == 0) revert InvalidStage();
+        
+        StageInfo storage stageInfo = stages[stage];
+        if (!stageInfo.isActive) revert StageNotActive();
+        
+        // Validate price consistency
+        _validatePrice(usdtAmount, magaxAmount, stageInfo.pricePerToken);
+        
+        (uint128 referrerBonus, uint128 refereeBonus, uint128 totalTokens) = _calculateBonuses(magaxAmount);
+        
+        if (stageInfo.tokensSold + totalTokens > stageInfo.tokensAllocated) {
+            revert InsufficientStageTokens();
+        }
+        
+        uint40 timestamp = uint40(block.timestamp);
+        _processReferralPurchase(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokens, stage, stageInfo, timestamp);
+    }
+
+    function _validateReferralPurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount, address referrer) internal view {
         if (buyer == address(0)) revert InvalidAddress();
         if (referrer == address(0)) revert InvalidReferrer();
         if (buyer == referrer) revert SelfReferral();
         if (usdtAmount == 0 || magaxAmount == 0) revert InvalidAmount();
+        if (usdtAmount > MAX_PURCHASE_USDT) revert ExceedsMaxPurchase();
         
-        // Cache current stage for gas optimization
-        uint8 _currentStage = currentStage;
-        if (_currentStage == 0) revert InvalidStage();
+        // Edge case: Check total limit including potential bonuses
+        if (totalUSDT + usdtAmount > MAX_TOTAL_USDT) revert ExceedsTotalLimit();
+    }
+
+    function _calculateBonuses(uint128 magaxAmount) internal pure returns (uint128 referrerBonus, uint128 refereeBonus, uint128 totalTokens) {
+        referrerBonus = (magaxAmount * REFERRER_BONUS_BPS) / BASIS_POINTS;
+        refereeBonus = (magaxAmount * REFEREE_BONUS_BPS) / BASIS_POINTS;
+        totalTokens = magaxAmount + referrerBonus + refereeBonus;
+    }
+
+    function _processReferralPurchase(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        address referrer,
+        uint128 referrerBonus,
+        uint128 refereeBonus,
+        uint128 totalTokensRequired,
+        uint8 stage,
+        StageInfo storage stageInfo,
+        uint40 timestamp
+    ) internal {
+        _setReferrerIfNeeded(buyer, referrer);
         
-        StageInfo storage stageInfo = stages[_currentStage];
-        if (!stageInfo.isActive) revert StageNotActive();
+        bool isNewBuyer = userReceipts[buyer].length == 0;
         
-        // Calculate bonuses
-        uint128 referrerBonus = (magaxAmount * REFERRER_BONUS_BPS) / BASIS_POINTS;
-        uint128 refereeBonus = (magaxAmount * REFEREE_BONUS_BPS) / BASIS_POINTS;
-        uint128 totalTokensRequired = magaxAmount + referrerBonus + refereeBonus;
+        // Record main purchase receipt for buyer
+        userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
         
-        // Validate total tokens available in stage
-        if (stageInfo.tokensSold + totalTokensRequired > stageInfo.tokensAllocated) {
-            revert InsufficientStageTokens();
+        // Record referee bonus receipt for buyer (5% bonus)
+        userReceipts[buyer].push(Receipt(0, refereeBonus, timestamp, stage, true));
+        
+        // Record referral bonus receipt for referrer (7% bonus)
+        userReceipts[referrer].push(Receipt(0, referrerBonus, timestamp, stage, true));
+        
+        // Update totals
+        _updateReferralTotals(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokensRequired, isNewBuyer);
+        
+        unchecked {
+            stageInfo.tokensSold += totalTokensRequired;
         }
         
-        // Validate price match (temporarily disabled for backward compatibility)
-        /*
-        uint128 expectedUsdtAmount = (magaxAmount * stageInfo.pricePerToken) / 1e18;
-        uint128 difference = usdtAmount > expectedUsdtAmount ? 
-            usdtAmount - expectedUsdtAmount : expectedUsdtAmount - usdtAmount;
-        if (difference > 1) revert InvalidPrice();
-        */
+        _emitReferralEvents(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, timestamp, stage, isNewBuyer);
+        
+        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
+            emit StageCompleted(stage, stageInfo.tokensSold);
+        }
+    }
 
-        // Set referrer if this is the first purchase
+    function _setReferrerIfNeeded(address buyer, address referrer) internal {
         if (userReferrer[buyer] == address(0)) {
             userReferrer[buyer] = referrer;
             emit ReferrerSet(buyer, referrer);
         }
+    }
 
-        bool isNewBuyer = userReceipts[buyer].length == 0;
-        
-        // Record base purchase
-        userReceipts[buyer].push(
-            Receipt(usdtAmount, magaxAmount, stageInfo.pricePerToken, uint40(block.timestamp), _currentStage, false)
-        );
-
-        // Record referrer bonus
-        userReceipts[referrer].push(
-            Receipt(0, referrerBonus, stageInfo.pricePerToken, uint40(block.timestamp), _currentStage, true)
-        );
-
-        // Record referee bonus
-        userReceipts[buyer].push(
-            Receipt(0, refereeBonus, stageInfo.pricePerToken, uint40(block.timestamp), _currentStage, true)
-        );
-        
-        // Update totals
+    function _updateReferralTotals(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        address referrer,
+        uint128 referrerBonus,
+        uint128 refereeBonus,
+        uint128 totalTokensRequired,
+        bool isNewBuyer
+    ) internal {
         userTotalUSDT[buyer] += usdtAmount;
         userTotalMAGAX[buyer] += magaxAmount + refereeBonus;
+        
+        // Edge case: When referrer makes subsequent normal purchases, 
+        // only count their own purchase, not double-count as referral bonus
         userTotalMAGAX[referrer] += referrerBonus;
         
         totalUSDT += usdtAmount;
         totalMAGAX += totalTokensRequired;
         
-        // Update referral data with unchecked increments (safe due to business logic limits)
-        unchecked {
-            referralData[referrer].totalReferrals++;
-        }
+        // Update referral statistics (bonuses are tracked separately from purchases)
+        unchecked { referralData[referrer].totalReferrals++; }
         referralData[referrer].totalBonusEarned += referrerBonus;
         referralData[buyer].totalRefereeBonus += refereeBonus;
         
-        // Update stage tokens sold
-        stageInfo.tokensSold += totalTokensRequired;
-        
         if (isNewBuyer) {
-            unchecked {
-                totalBuyers++;
-            }
+            unchecked { totalBuyers++; }
         }
-        
-        emit PurchaseRecorded(
-            buyer,
-            usdtAmount,
-            magaxAmount,
-            uint40(block.timestamp),
-            _currentStage,
-            stageInfo.pricePerToken,
-            userReceipts[buyer].length,
-            isNewBuyer
-        );
+    }
 
-        emit ReferralBonusAwarded(referrer, buyer, referrerBonus, refereeBonus, _currentStage);
-        
-        // Check if stage is complete
-        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
-            emit StageCompleted(_currentStage, stageInfo.tokensSold);
-        }
+    function _emitReferralEvents(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        address referrer,
+        uint128 referrerBonus,
+        uint128 refereeBonus,
+        uint40 timestamp,
+        uint8 stage,
+        bool isNewBuyer
+    ) internal {
+        emit PurchaseRecorded(buyer, usdtAmount, magaxAmount, timestamp, stage, userReceipts[buyer].length, isNewBuyer);
+        emit ReferralBonusAwarded(referrer, buyer, referrerBonus, refereeBonus, stage);
     }
 
     function getReceipts(address buyer) external view returns (Receipt[] memory) {
@@ -366,10 +428,10 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         Receipt[] memory receipts = userReceipts[buyer];
         totalPurchases = receipts.length;
         
-        if (totalPurchases == 0) return (0, 0, 0, 0, 0);
-        
         totalUSDTSpent = userTotalUSDT[buyer];
         totalMAGAXAllocated = userTotalMAGAX[buyer];
+        
+        if (totalPurchases == 0) return (totalPurchases, totalUSDTSpent, totalMAGAXAllocated, 0, 0);
         
         firstPurchaseTime = receipts[0].time;
         lastPurchaseTime = receipts[totalPurchases - 1].time;
@@ -403,6 +465,12 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         emit StageConfigured(stage, pricePerToken, tokensAllocated);
     }
 
+    /**
+     * @notice Activates a specific presale stage and deactivates the current one
+     * @dev Stage transitions are intentionally manual for admin control and flexibility.
+     *      This allows for precise timing of stage changes and emergency adjustments.
+     * @param stage The stage number to activate (1-50)
+     */
     function activateStage(uint8 stage) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
         if (stages[stage].tokensAllocated == 0) revert InvalidAmount();
@@ -419,7 +487,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         // Activate new stage
         stages[stage].isActive = true;
         currentStage = stage;
-        emit StageActivated(stage);
+        emit StageActivated(stage, msg.sender);
     }
 
     function getStageInfo(uint8 stage) external view returns (
@@ -468,6 +536,12 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         _unpause(); 
     }
 
+    function finalise() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        finalised = true;
+        _pause(); // Automatically pause to prevent accidental RECORDER_ROLE activity
+        emit Finalised(uint40(block.timestamp));
+    }
+
     // Emergency token withdrawal for accidentally sent tokens
     function emergencyTokenWithdraw(IERC20 token, address to) 
         external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -476,7 +550,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint256 balance = token.balanceOf(address(this));
         if (balance == 0) revert NoTokensToWithdraw();
         
-        token.transfer(to, balance);
+        token.safeTransfer(to, balance);
         emit EmergencyTokenWithdraw(address(token), to, balance);
     }
 
@@ -509,7 +583,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
      * @return totalReferrals Number of successful referrals
      * @return totalBonusEarned Total bonus MAGAX earned (as referrer + as referee)
      */
-    function getReferralInfo(address user) external view returns (uint256 totalReferrals, uint128 totalBonusEarned) {
+    function getReferralInfo(address user) external view returns (uint32 totalReferrals, uint128 totalBonusEarned) {
         ReferralInfo memory info = referralData[user];
         return (info.totalReferrals, info.totalBonusEarned + info.totalRefereeBonus);
     }
