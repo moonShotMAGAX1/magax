@@ -114,8 +114,17 @@ async function main () {
 
   await setupRoles(presale, recorder, admin, deployer);
   await configureStage1(presale);
-  await presale.activateStage(1);
-  console.log("Stage 1 activated\n");
+  
+  // Ensure deployer can activate stage (check admin role)
+  const ADMIN = await presale.DEFAULT_ADMIN_ROLE();
+  const hasAdminRole = await presale.hasRole(ADMIN, deployer.address);
+  if (!hasAdminRole) {
+    console.log("⚠️  Deployer doesn't have admin role, cannot activate stage");
+    console.log("You'll need to activate Stage 1 manually after deployment");
+  } else {
+    await presale.activateStage(1);
+    console.log("Stage 1 activated\n");
+  }
 
   await dumpPresaleInfo(presale);
   
