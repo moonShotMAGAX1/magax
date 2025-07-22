@@ -45,6 +45,7 @@ The presale receipt system provides:
 - **Multi-purchase support** per buyer
 - **50-stage presale system** with configurable pricing (stages configured as needed)
 - **Referral program** with 7% referrer and 5% referee bonuses
+- **Promotional bonus system** with configurable bonus percentages (up to 50%)
 - **Manual stage transitions** for precise admin control
 - **Comprehensive edge case handling** and audit-ready security
 
@@ -207,6 +208,13 @@ The project includes comprehensive tests covering:
 - Referral bonus calculations (7% referrer, 5% referee)
 - Referral relationship management
 - Edge cases and validation
+
+#### Promotional System (6 tests)
+
+- Promotional bonus calculations with configurable rates
+- Bonus percentage validation (0-50% limits)
+- Promo purchase recording and verification
+- Edge cases and security validation
 
 #### Stage Management (11 tests)
 
@@ -375,6 +383,25 @@ presaleReceipts.recordPurchaseWithReferral(
 );
 ```
 
+### Promotional Purchases
+
+```solidity
+// Record purchase with promotional bonus
+presaleReceipts.recordPurchaseWithPromo(
+    buyerAddress,    // Buyer
+    usdtAmount,      // USDT paid
+    magaxAmount,     // Base MAGAX amount
+    promoBps         // Promo bonus in basis points (e.g., 1500 = 15%)
+);
+```
+
+**Promo System Features:**
+
+- **Configurable bonuses**: 0% to 50% (0-5000 basis points)
+- **Flexible promotions**: Different bonus rates for different campaigns
+- **Admin control**: Only RECORDER_ROLE can set promo rates
+- **Validation**: Built-in limits prevent excessive bonuses
+
 ---
 
 ## Gas Usage
@@ -385,6 +412,7 @@ presaleReceipts.recordPurchaseWithReferral(
 | Deploy Presale | ~2.1M gas | MAGAXPresaleReceipts on Polygon |
 | Record Purchase | ~85k-170k gas | Varies with stage configuration |
 | Record Referral Purchase | ~120k-200k gas | Includes bonus calculations |
+| Record Promo Purchase | ~90k-180k gas | Includes promotional bonus |
 | Configure Stage | ~45k gas | One-time per stage |
 | Activate Stage | ~30k gas | Manual stage transitions |
 | Pause/Unpause | ~25k-47k gas | Emergency controls |
@@ -461,6 +489,17 @@ The contract emits automatic OpenZeppelin events for role management that audito
 - **Purpose**: Tracks referral bonus distributions
 - **Edge Case Handling**: Referrer subsequent purchases don't double-count bonuses
 
+#### `PromoBonusAwarded(address indexed buyer, uint128 baseAmount, uint128 bonusAmount, uint16 promoBps, uint8 stage)`
+
+- **Purpose**: Tracks promotional bonus distributions
+- **Monitoring**: Verify promotional bonuses are correctly calculated and awarded
+- **Parameters**:
+  - `buyer`: Address receiving the promotional bonus
+  - `baseAmount`: Original MAGAX amount purchased
+  - `bonusAmount`: Additional MAGAX tokens from promotion
+  - `promoBps`: Promotional bonus percentage in basis points
+  - `stage`: Stage where the promotional purchase occurred
+
 ### Emergency Events
 
 #### `Paused(address account)` / `Unpaused(address account)`
@@ -477,6 +516,8 @@ const eventFilters = {
   roleGrants: contract.filters.RoleGranted(),
   stageActivations: contract.filters.StageActivated(),
   purchases: contract.filters.PurchaseRecorded(),
+  referralBonuses: contract.filters.ReferralBonusAwarded(),
+  promoBonuses: contract.filters.PromoBonusAwarded(),
   emergencyPause: contract.filters.Paused()
 };
 ```
@@ -488,6 +529,7 @@ const eventFilters = {
 3. **Purchase Validation**: Cross-reference purchase events with off-chain records
 4. **Emergency Actions**: Alert on pause/unpause events
 5. **Referral Integrity**: Verify referral bonuses are not double-counted
+6. **Promotional Compliance**: Monitor promo bonus rates and ensure they stay within limits (0-50%)
 
 ---
 

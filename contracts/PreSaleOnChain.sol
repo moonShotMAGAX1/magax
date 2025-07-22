@@ -23,6 +23,7 @@ error InvalidReferrer();
 error SelfReferral();
 error PresaleFinalised();
 error PriceMismatch();
+error InvalidPromoBps();
 
 contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -38,13 +39,19 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     uint16 public constant REFERRER_BONUS_BPS = 700;  // 7% bonus for referrer
     uint16 public constant REFEREE_BONUS_BPS = 500;   // 5% bonus for referee
     uint16 public constant BASIS_POINTS = 10000; // 100% in basis points
+    
+    // Promo system constants
+    uint16 public constant DEFAULT_PROMO_BONUS_BPS = 1000; // 10% default promo bonus
+    uint16 public constant MAX_PROMO_BONUS_BPS = 5000; // 50% max promo bonus
+
+    uint16 public maxPromoCapBps = MAX_PROMO_BONUS_BPS;
 
     struct Receipt {
         uint128 usdt;             // 6-decimals (128 bits)
         uint128 magax;            // 18-decimals (128 bits)
         uint40  time;             // timestamp (40 bits)
         uint8   stage;            // presale stage 1-50 (8 bits)
-        bool    isReferralBonus;  // referral bonus flag (8 bits)
+        bool    isBonus;          // ANY bonus (referral or promo) (8 bits)
         // Total: 312 bits = 2 storage slots (removed pricePerToken for gas savings)
     }
 
@@ -62,6 +69,11 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 totalBonusEarned;    // Total bonus MAGAX earned as referrer
         uint128 totalRefereeBonus;   // Total bonus MAGAX earned as referee
     }
+    
+    // Promo system - simplified
+    struct UserPromoUsage {
+        uint128 totalPromoBonus;    // Total bonus tokens earned from promos
+    }
 
     // Core storage
     mapping(address => Receipt[]) public userReceipts;
@@ -71,6 +83,9 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     // Referral system storage
     mapping(address => ReferralInfo) public referralData;
     mapping(address => address) public userReferrer; // user -> their referrer
+
+    // Promo system storage - simplified
+    mapping(address => UserPromoUsage) public userPromoData;
 
     // Stage management
     mapping(uint8 => StageInfo) public stages;
@@ -104,6 +119,14 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     event ReferrerSet(
         address indexed user,
         address indexed referrer
+    );
+
+    event PromoUsed(
+        address indexed user,
+        uint16 promoBps,
+        uint128 bonusTokens,
+        uint8 stage,
+        uint256 receiptIndex
     );
 
     event StageConfigured(
@@ -542,6 +565,11 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         emit Finalised(uint40(block.timestamp));
     }
 
+    function setMaxPromoBps(uint16 newCap) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newCap == 0 || newCap > BASIS_POINTS) revert InvalidPromoBps();
+        maxPromoCapBps = newCap;
+    }
+
     // Emergency token withdrawal for accidentally sent tokens
     function emergencyTokenWithdraw(IERC20 token, address to) 
         external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -604,5 +632,129 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
      */
     function hasReferrer(address user) external view returns (bool) {
         return userReferrer[user] != address(0);
+    }
+
+    // ============= PROMO SYSTEM FUNCTIONS =============
+
+    /**
+     * @notice Record a purchase with promo bonus percentage
+     * @param buyer The address of the buyer
+     * @param usdtAmount Amount of USDT spent (6 decimals)
+     * @param magaxAmount Amount of MAGAX tokens purchased (18 decimals)
+     * @param promoBps Promo bonus percentage in basis points (e.g., 1000 = 10%)
+     */
+    function recordPurchaseWithPromo(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        uint16 promoBps
+    ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
+        if (finalised) revert PresaleFinalised();
+        
+        _validatePurchase(buyer, usdtAmount, magaxAmount);
+        _validatePromoBps(promoBps);
+        
+        uint8 stage = currentStage;
+        StageInfo storage stageInfo = stages[stage];
+        _validateStage(stage, magaxAmount, stageInfo);
+        _validatePrice(usdtAmount, magaxAmount, stageInfo.pricePerToken);
+        
+        uint128 promoBonus = _calculatePromoBonus(magaxAmount, promoBps);
+        uint128 totalTokens = magaxAmount + promoBonus;
+        
+        // Check if stage has enough tokens for purchase + bonus
+        if (stageInfo.tokensSold + totalTokens > stageInfo.tokensAllocated) {
+            revert InsufficientStageTokens();
+        }
+        
+        uint40 timestamp = uint40(block.timestamp);
+        _processPromoLaunch(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, totalTokens, stage, stageInfo, timestamp);
+    }
+
+    function _validatePromoBps(uint16 promoBps) internal view {
+        if (promoBps == 0 || promoBps > maxPromoCapBps) revert InvalidPromoBps();
+    }
+
+    function _calculatePromoBonus(uint128 magaxAmount, uint16 promoBps) internal pure returns (uint128) {
+        return (magaxAmount * promoBps) / BASIS_POINTS;
+    }
+
+    function _processPromoLaunch(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        uint16 promoBps,
+        uint128 promoBonus,
+        uint128 totalTokens,
+        uint8 stage,
+        StageInfo storage stageInfo,
+        uint40 timestamp
+    ) internal {
+        bool isNewBuyer = userTotalUSDT[buyer] == 0;
+        
+        // Record main purchase receipt
+        userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
+        
+        // Record promo bonus receipt and keep its index
+        userReceipts[buyer].push(Receipt(0, promoBonus, timestamp, stage, true));
+        uint256 bonusReceiptIdx = userReceipts[buyer].length - 1;
+        
+        // Update totals
+        _updatePromoTotals(buyer, usdtAmount, magaxAmount, promoBonus, totalTokens, isNewBuyer);
+        
+        // Update stage tokens sold
+        unchecked {
+            stageInfo.tokensSold += totalTokens;
+        }
+        
+        _emitPromoEvents(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, timestamp, stage, isNewBuyer, bonusReceiptIdx);
+        
+        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
+            emit StageCompleted(stage, stageInfo.tokensSold);
+        }
+    }
+
+    function _updatePromoTotals(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 /* magaxAmount */,
+        uint128 promoBonus,
+        uint128 totalTokens,
+        bool isNewBuyer
+    ) internal {
+        userTotalUSDT[buyer] += usdtAmount;
+        userTotalMAGAX[buyer] += totalTokens; // Include bonus in user's total
+        userPromoData[buyer].totalPromoBonus += promoBonus;
+        
+        totalUSDT += usdtAmount;
+        totalMAGAX += totalTokens;
+        
+        if (isNewBuyer) {
+            unchecked { totalBuyers++; }
+        }
+    }
+
+    function _emitPromoEvents(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        uint16 promoBps,
+        uint128 promoBonus,
+        uint40 timestamp,
+        uint8 stage,
+        bool isNewBuyer,
+        uint256 bonusReceiptIdx
+    ) internal {
+        emit PurchaseRecorded(buyer, usdtAmount, magaxAmount, timestamp, stage, userReceipts[buyer].length, isNewBuyer);
+        emit PromoUsed(buyer, promoBps, promoBonus, stage, bonusReceiptIdx);
+    }
+
+    /**
+     * @notice Get user's total promo bonus earned
+     * @param user The user address
+     * @return totalPromoBonus Total bonus tokens earned from all promos
+     */
+    function getUserPromoBonus(address user) external view returns (uint128) {
+        return userPromoData[user].totalPromoBonus;
     }
 }
