@@ -180,16 +180,47 @@ POLYGON_NETWORK=polygon   # or polygonMumbai for testnet
 
 ### 2. Role Configuration
 
-Configure roles on the Polygon presale contract:
+The presale contract implements a role-based access control system with the following roles:
+
+#### Core Roles
+
+- **DEFAULT_ADMIN_ROLE**: Admin operations (pause/unpause, promo settings)
+- **RECORDER_ROLE**: Records presale purchases from backend service
+- **STAGE_MANAGER_ROLE**: Manages presale stages (configure, activate)  
+- **EMERGENCY_ROLE**: Emergency token withdrawals
+- **FINALIZER_ROLE**: Finalizes the presale
+
+#### Role Assignment
+
+The deployment script automatically assigns roles based on your `.env` configuration:
 
 ```javascript
-// Grant RECORDER_ROLE to your backend service
-await presaleContract.grantRole(RECORDER_ROLE, BACKEND_SERVICE_ADDRESS);
+// Core roles (assigned during deployment)
+await presaleContract.grantRole(RECORDER_ROLE, RECORDER_ADDRESS);
+await presaleContract.grantRole(DEFAULT_ADMIN_ROLE, ADMIN_ADDRESS);
 
-// Optionally, revoke deployer admin rights and transfer to multisig
-await presaleContract.grantRole(DEFAULT_ADMIN_ROLE, MULTISIG_ADDRESS);
-await presaleContract.renounceRole(DEFAULT_ADMIN_ROLE, deployer.address);
+// Enhanced security roles (if different addresses provided)
+await presaleContract.grantRole(STAGE_MANAGER_ROLE, STAGE_MANAGER_ADDRESS);
+await presaleContract.grantRole(EMERGENCY_ROLE, EMERGENCY_ROLE_ADDRESS);
+await presaleContract.grantRole(FINALIZER_ROLE, FINALIZER_ROLE_ADDRESS);
 ```
+
+#### Security Best Practices
+
+For production deployments:
+
+1. **Use separate addresses** for different roles
+2. **Use multi-signature wallets** for critical roles (ADMIN, EMERGENCY, FINALIZER)
+3. **Limit RECORDER_ROLE** to your trusted backend service only
+4. **Consider role rotation** for enhanced security
+
+#### Multi-Signature Protection
+
+Critical operations require 2-of-N confirmations:
+
+- `finalise()` - Finalizes the presale
+- `setMaxPromoBps()` - Updates promo bonus caps
+- `emergencyTokenWithdraw()` - Emergency withdrawals
 
 ### 3. Stage Configuration
 

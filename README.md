@@ -4,7 +4,7 @@
 
 - **Token Name:** MoonShot MAGAX
 
-Complete ecosystem for the MoonShot MAGAX token, including the ERC-20 token contract and presale receipt tracking system. Built using Solidity and deployed via Hardhat.
+Complete ecosystem for the MoonShot MAGAX token, including the ERC-20 token contract and presale receipt tracking system. Built using Solidity and deployed via Hardhat with enhanced security features.
 
 ---
 
@@ -19,18 +19,45 @@ This project consists of two main smart contracts:
 
 ### 2. **MAGAXPresaleReceipts**
 
-- On-chain presale tracking system
+- On-chain presale tracking system with multi-signature security
 - Records purchase receipts for transparency
-- Role-based access control
+- Advanced role-based access control
+- Multi-signature protection for critical operations
 
 ---
 
-## � Token Details
+## 🪙 Token Details
 
 - **Token Name:** MoonShot MagaX
 - **Symbol:** MAGAX
 - **Decimals:** 18
 - **Total Supply:** 1,000,000,000,000 MAGAX (1 Trillion)
+
+---
+
+## 🔐 Enhanced Security Features
+
+### Multi-Signature Protection
+
+- **2-of-N confirmation** system for sensitive functions
+- **Operation proposal** and confirmation workflow
+- **Transparent operation tracking** with events
+
+### Role-Based Access Control
+
+- **`RECORDER_ROLE`**: Purchase recording and promo/referral distributions
+- **`STAGE_MANAGER_ROLE`**: Stage configuration and activation
+- **`EMERGENCY_ROLE`**: Emergency token withdrawal functions
+- **`FINALIZER_ROLE`**: Presale finalization (requires multi-sig)
+- **`DEFAULT_ADMIN_ROLE`**: Core admin functions and role management
+
+### Protected Operations
+
+The following critical functions require multi-signature confirmation:
+
+- `finalise()` - Finalizing the presale
+- `setMaxPromoBps()` - Changing promotional bonus limits
+- `emergencyTokenWithdraw()` - Emergency token recovery
 
 ---
 
@@ -40,11 +67,13 @@ The presale receipt system provides:
 
 - **Transparent tracking** of all presale purchases
 - **On-chain receipts** showing USDT paid and MAGAX allocated
-- **Role-based security** with RECORDER_ROLE for authorized purchase recording
+- **Enhanced role-based security** with separated roles for different functions
+- **Multi-signature protection** for critical administrative functions
 - **Pausable functionality** for emergency control
 - **Multi-purchase support** per buyer
 - **50-stage presale system** with configurable pricing (stages configured as needed)
 - **Referral program** with 7% referrer and 5% referee bonuses
+- **Promotional bonus system** with configurable bonus percentages (up to 50%)
 - **Manual stage transitions** for precise admin control
 - **Comprehensive edge case handling** and audit-ready security
 
@@ -53,8 +82,54 @@ The presale receipt system provides:
 - Records USDT amount (6 decimals) and MAGAX amount (18 decimals)
 - Timestamp tracking for each purchase
 - Total supply tracking (totalUSDT & totalMAGAX)
-- Access control with admin and recorder roles
+- Enhanced multi-role access control system
+- Multi-signature protection for critical operations
 - Emergency pause/unpause functionality
+
+---
+
+## 🔒 Multi-Signature Workflow
+
+### How Multi-Sig Operations Work
+
+1. **Proposal Phase**: First authorized user calls the protected function
+   - Operation is proposed and logged with `OperationProposed` event
+   - Transaction reverts with "Operation proposed - requires additional confirmation"
+
+2. **Confirmation Phase**: Second authorized user calls the same function
+   - System confirms the operation and logs `OperationConfirmed` event
+   - If enough confirmations (2), operation executes successfully
+
+3. **Execution**: Operation runs and logs `OperationExecuted` event
+
+### Example: Finalizing Presale
+
+```javascript
+// Admin 1 proposes finalization
+await contract.connect(admin1).finalise();
+// → Emits: OperationProposed(hash, admin1, "FINALIZE_PRESALE")
+// → Reverts: "Operation proposed - requires additional confirmation"
+
+// Admin 2 confirms and executes
+await contract.connect(admin2).finalise();
+// → Emits: OperationConfirmed(hash, admin2, 2)
+// → Emits: OperationExecuted(hash, admin2)
+// → Executes: Presale finalized successfully
+```
+
+### Checking Operation Status
+
+```javascript
+const operationHash = ethers.utils.keccak256(
+  ethers.utils.defaultAbiCoder.encodePacked(
+    ["string", "uint256"], 
+    ["FINALIZE_PRESALE", Math.floor(Date.now() / 3600000)]
+  )
+);
+
+const [confirmations, isConfirmed] = await contract.getOperationStatus(operationHash);
+console.log(`Confirmations: ${confirmations}, You confirmed: ${isConfirmed}`);
+```
 
 ---
 
@@ -208,6 +283,13 @@ The project includes comprehensive tests covering:
 - Referral relationship management
 - Edge cases and validation
 
+#### Promotional System (6 tests)
+
+- Promotional bonus calculations with configurable rates
+- Bonus percentage validation (0-50% limits)
+- Promo purchase recording and verification
+- Edge cases and security validation
+
 #### Stage Management (11 tests)
 
 - Manual stage transitions
@@ -338,8 +420,8 @@ presaleReceipts.recordPurchase(
 ### Viewing Purchase History
 
 ```solidity
-// Anyone can view receipts
-Receipt[] memory receipts = presaleReceipts.getReceipts(buyerAddress);
+// Anyone can view receipts using the public mapping
+Receipt[] memory receipts = presaleReceipts.userReceipts(buyerAddress);
 
 // Paginated view for users with many purchases  
 Receipt[] memory page = presaleReceipts.getReceiptsPaginated(buyerAddress, 0, 50);
@@ -348,14 +430,14 @@ Receipt[] memory page = presaleReceipts.getReceiptsPaginated(buyerAddress, 0, 50
 ### Stage Management
 
 ```solidity
-// Configure a new stage (admin only)
+// Configure a new stage (STAGE_MANAGER_ROLE only)
 presaleReceipts.configureStage(
     2,                    // Stage number
     2000,                 // Price: 0.002 USDT per MAGAX (6 decimals)
     ethers.parseUnits("1000000", 18)  // 1M MAGAX allocation
 );
 
-// Manually activate stage (admin only)
+// Manually activate stage (STAGE_MANAGER_ROLE only)
 presaleReceipts.activateStage(2);
 
 // Get current stage information
@@ -375,6 +457,55 @@ presaleReceipts.recordPurchaseWithReferral(
 );
 ```
 
+### Promotional Purchases
+
+```solidity
+// Record purchase with promotional bonus
+presaleReceipts.recordPurchaseWithPromo(
+    buyerAddress,    // Buyer
+    usdtAmount,      // USDT paid
+    magaxAmount,     // Base MAGAX amount
+    promoBps         // Promo bonus in basis points (e.g., 1500 = 15%)
+);
+```
+
+**Promo System Features:**
+
+- **Configurable bonuses**: 0% to 50% (0-5000 basis points)
+- **Flexible promotions**: Different bonus rates for different campaigns
+- **Admin control**: Only RECORDER_ROLE can set promo rates
+- **Validation**: Built-in limits prevent excessive bonuses
+
+### Role Management
+
+```solidity
+// Grant roles (DEFAULT_ADMIN_ROLE required)
+presaleReceipts.grantRole(RECORDER_ROLE, recorderAddress);
+presaleReceipts.grantRole(STAGE_MANAGER_ROLE, stageManagerAddress);
+presaleReceipts.grantRole(EMERGENCY_ROLE, emergencyAddress);
+presaleReceipts.grantRole(FINALIZER_ROLE, finalizerAddress);
+
+// Check role membership
+bool hasRole = presaleReceipts.hasRole(RECORDER_ROLE, userAddress);
+
+// Revoke roles
+presaleReceipts.revokeRole(RECORDER_ROLE, oldRecorderAddress);
+```
+
+### Multi-Signature Operations
+
+```solidity
+// Example: Emergency token withdrawal (requires 2 confirmations)
+
+// First admin proposes
+await presaleReceipts.connect(admin1).emergencyTokenWithdraw(tokenAddress, recipientAddress);
+// → Reverts with "Operation proposed - requires additional confirmation"
+
+// Second admin confirms and executes
+await presaleReceipts.connect(admin2).emergencyTokenWithdraw(tokenAddress, recipientAddress);
+// → Executes successfully
+```
+
 ---
 
 ## Gas Usage
@@ -385,6 +516,7 @@ presaleReceipts.recordPurchaseWithReferral(
 | Deploy Presale | ~2.1M gas | MAGAXPresaleReceipts on Polygon |
 | Record Purchase | ~85k-170k gas | Varies with stage configuration |
 | Record Referral Purchase | ~120k-200k gas | Includes bonus calculations |
+| Record Promo Purchase | ~90k-180k gas | Includes promotional bonus |
 | Configure Stage | ~45k gas | One-time per stage |
 | Activate Stage | ~30k gas | Manual stage transitions |
 | Pause/Unpause | ~25k-47k gas | Emergency controls |
@@ -461,6 +593,17 @@ The contract emits automatic OpenZeppelin events for role management that audito
 - **Purpose**: Tracks referral bonus distributions
 - **Edge Case Handling**: Referrer subsequent purchases don't double-count bonuses
 
+#### `PromoBonusAwarded(address indexed buyer, uint128 baseAmount, uint128 bonusAmount, uint16 promoBps, uint8 stage)`
+
+- **Purpose**: Tracks promotional bonus distributions
+- **Monitoring**: Verify promotional bonuses are correctly calculated and awarded
+- **Parameters**:
+  - `buyer`: Address receiving the promotional bonus
+  - `baseAmount`: Original MAGAX amount purchased
+  - `bonusAmount`: Additional MAGAX tokens from promotion
+  - `promoBps`: Promotional bonus percentage in basis points
+  - `stage`: Stage where the promotional purchase occurred
+
 ### Emergency Events
 
 #### `Paused(address account)` / `Unpaused(address account)`
@@ -477,6 +620,8 @@ const eventFilters = {
   roleGrants: contract.filters.RoleGranted(),
   stageActivations: contract.filters.StageActivated(),
   purchases: contract.filters.PurchaseRecorded(),
+  referralBonuses: contract.filters.ReferralBonusAwarded(),
+  promoBonuses: contract.filters.PromoBonusAwarded(),
   emergencyPause: contract.filters.Paused()
 };
 ```
@@ -488,6 +633,7 @@ const eventFilters = {
 3. **Purchase Validation**: Cross-reference purchase events with off-chain records
 4. **Emergency Actions**: Alert on pause/unpause events
 5. **Referral Integrity**: Verify referral bonuses are not double-counted
+6. **Promotional Compliance**: Monitor promo bonus rates and ensure they stay within limits (0-50%)
 
 ---
 
