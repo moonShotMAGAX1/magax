@@ -19,7 +19,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     await mockToken.waitForDeployment();
     
     const MAGAXPresaleReceipts = await ethers.getContractFactory("MAGAXPresaleReceipts");
-    presaleReceipts = await MAGAXPresaleReceipts.deploy(recorder.address);
+    presaleReceipts = await MAGAXPresaleReceipts.deploy(recorder.address, ethers.ZeroAddress); // No timelock for existing tests
     await presaleReceipts.waitForDeployment();
     
     // Grant additional roles for testing
@@ -47,7 +47,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     it("Should set correct constants", async function () {
       expect(await presaleReceipts.MAX_PURCHASE_USDT()).to.equal(MAX_PURCHASE_USDT);
       expect(await presaleReceipts.MAX_TOTAL_USDT()).to.equal(MAX_TOTAL_USDT);
-      expect(await presaleReceipts.REQUIRED_CONFIRMATIONS()).to.equal(2);
+      // REQUIRED_CONFIRMATIONS removed in optimization - now uses timelock for critical operations
     });
 
     it("Should start with zero counters", async function () {
@@ -68,7 +68,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     it("Should fail deployment with zero recorder address", async function () {
       const MAGAXPresaleReceipts = await ethers.getContractFactory("MAGAXPresaleReceipts");
       await expect(
-        MAGAXPresaleReceipts.deploy(ethers.ZeroAddress)
+        MAGAXPresaleReceipts.deploy(ethers.ZeroAddress, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(MAGAXPresaleReceipts, "InvalidAddress");
     });
   });
@@ -323,7 +323,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     it("Should fail when no stage is active", async function () {
       // Deploy a fresh contract without any active stage
       const MAGAXPresaleReceipts = await ethers.getContractFactory("MAGAXPresaleReceipts");
-      const freshContract = await MAGAXPresaleReceipts.deploy(recorder.address);
+      const freshContract = await MAGAXPresaleReceipts.deploy(recorder.address, ethers.ZeroAddress);
       await freshContract.waitForDeployment();
       
       const usdtAmount = ethers.parseUnits("100", 6);
@@ -389,21 +389,27 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       await mockToken.transfer(await presaleReceipts.getAddress(), ethers.parseUnits("1000", 18));
     });
 
-    it("Should allow emergency role to withdraw accidentally sent tokens with multi-sig", async function () {
+    it("Should allow emergency role to withdraw accidentally sent tokens with 3-of-3 multi-sig", async function () {
       const balanceBefore = await mockToken.balanceOf(owner.address);
       const contractBalance = await mockToken.balanceOf(await presaleReceipts.getAddress());
 
-      // Grant emergency role to owner for this test
+      // Grant emergency role to multiple accounts for 3-of-3 multi-sig
       await presaleReceipts.connect(owner).grantRole(await presaleReceipts.EMERGENCY_ROLE(), owner.address);
+      await presaleReceipts.connect(owner).grantRole(await presaleReceipts.EMERGENCY_ROLE(), buyer1.address);
 
       // First call proposes the withdrawal - should emit OperationProposed
       await expect(
-        presaleReceipts.connect(emergencyAdmin).emergencyTokenWithdraw(await mockToken.getAddress(), owner.address)
+        presaleReceipts.connect(emergencyAdmin).immediateEmergencyWithdraw(await mockToken.getAddress(), owner.address)
       ).to.emit(presaleReceipts, "OperationProposed");
 
-      // Second call with another emergency role holder executes the withdrawal
+      // Second call with another emergency role holder
       await expect(
-        presaleReceipts.connect(owner).emergencyTokenWithdraw(await mockToken.getAddress(), owner.address)
+        presaleReceipts.connect(owner).immediateEmergencyWithdraw(await mockToken.getAddress(), owner.address)
+      ).to.emit(presaleReceipts, "OperationConfirmed");
+
+      // Third call executes the withdrawal (3-of-3 required)
+      await expect(
+        presaleReceipts.connect(buyer1).immediateEmergencyWithdraw(await mockToken.getAddress(), owner.address)
       ).to.emit(presaleReceipts, "EmergencyTokenWithdraw");
 
       const balanceAfter = await mockToken.balanceOf(owner.address);
@@ -414,31 +420,26 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
 
     it("Should fail with zero withdrawal address on first confirmation", async function () {
+      // Since timelock is not active (deployed with ZeroAddress), emergencyTokenWithdraw works normally
+      // but should still fail with InvalidAddress for zero address parameter
       await expect(
         presaleReceipts.connect(emergencyAdmin).emergencyTokenWithdraw(await mockToken.getAddress(), ethers.ZeroAddress)
-      ).to.emit(presaleReceipts, "OperationProposed");
+      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidAddress");
     });
 
     it("Should fail when no tokens to withdraw on first confirmation", async function () {
-      // First withdraw all tokens using multi-sig process
-      await presaleReceipts.connect(owner).grantRole(await presaleReceipts.EMERGENCY_ROLE(), owner.address);
+      // First withdraw any existing tokens to set up the test condition
+      const currentBalance = await mockToken.balanceOf(await presaleReceipts.getAddress());
+      if (currentBalance > 0) {
+        // Use emergencyTokenWithdraw to clear the balance first
+        await presaleReceipts.connect(emergencyAdmin).emergencyTokenWithdraw(await mockToken.getAddress(), owner.address);
+      }
       
-      // Propose withdrawal
+      // Now the contract should have zero balance
+      // Since timelock is not active, emergencyTokenWithdraw works normally
+      // but should fail with NoTokensToWithdraw when there are no tokens
       await expect(
         presaleReceipts.connect(emergencyAdmin).emergencyTokenWithdraw(await mockToken.getAddress(), owner.address)
-      ).to.emit(presaleReceipts, "OperationProposed");
-      
-      // Execute withdrawal
-      await presaleReceipts.connect(owner).emergencyTokenWithdraw(await mockToken.getAddress(), owner.address);
-
-      // Try to withdraw again - first call proposes operation
-      await expect(
-        presaleReceipts.connect(emergencyAdmin).emergencyTokenWithdraw(await mockToken.getAddress(), owner.address)
-      ).to.emit(presaleReceipts, "OperationProposed");
-      
-      // Second call should fail with NoTokensToWithdraw since balance is 0
-      await expect(
-        presaleReceipts.connect(owner).emergencyTokenWithdraw(await mockToken.getAddress(), owner.address)
       ).to.be.revertedWithCustomError(presaleReceipts, "NoTokensToWithdraw");
     });
 
@@ -992,27 +993,15 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
         expect(maxCap).to.equal(MAX_PROMO_BONUS_BPS);
       });
 
-      it("should allow admin to update max promo cap with multi-sig", async function () {
+      it("should allow admin to update max promo cap (no timelock deployed)", async function () {
         const newCap = 7500; // 75%
 
-        // Grant DEFAULT_ADMIN_ROLE to finalizer for second confirmation
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.DEFAULT_ADMIN_ROLE(), finalizer.address);
-
-        // First admin proposes change - should emit OperationProposed but not change state
+        // Since timelock is not active (ZeroAddress), setMaxPromoBps works normally
         await expect(
           presaleReceipts.connect(owner).setMaxPromoBps(newCap)
-        ).to.emit(presaleReceipts, "OperationProposed");
+        ).to.emit(presaleReceipts, "MaxPromoBpsUpdated");
 
-        // Setting should not have changed yet
-        expect(await presaleReceipts.maxPromoCapBps()).to.equal(5000);
-
-        // Second admin confirms - should execute successfully and emit events
-        await expect(
-          presaleReceipts.connect(finalizer).setMaxPromoBps(newCap)
-        ).to.emit(presaleReceipts, "OperationConfirmed")
-          .and.to.emit(presaleReceipts, "MaxPromoBpsUpdated");
-        
-        // The operation should have executed
+        // Setting should have changed
         expect(await presaleReceipts.maxPromoCapBps()).to.equal(newCap);
       });
 
@@ -1023,48 +1012,28 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       });
 
       it("should reject invalid promo caps", async function () {
-        // Grant admin2 DEFAULT_ADMIN_ROLE for multi-sig
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.DEFAULT_ADMIN_ROLE(), admin2.address);
-        
-        // Zero cap - should be proposed on first call
+        // Since timelock is not active, setMaxPromoBps works normally but validates parameters
         await expect(
           presaleReceipts.connect(owner).setMaxPromoBps(0)
-        ).to.emit(presaleReceipts, "OperationProposed");
-        
-        // Second admin confirms (should fail with InvalidPromoBps during execution)
-        await expect(
-          presaleReceipts.connect(admin2).setMaxPromoBps(0)
         ).to.be.revertedWithCustomError(presaleReceipts, "InvalidPromoBps");
-
-        // Over 100% cap - should also be proposed, then rejected on execution
+        
+        // Over 100% cap - should also fail with InvalidPromoBps
         await expect(
           presaleReceipts.connect(owner).setMaxPromoBps(10001)
-        ).to.emit(presaleReceipts, "OperationProposed");
-        
-        // Second admin confirms (should fail with InvalidPromoBps)
-        await expect(
-          presaleReceipts.connect(admin2).setMaxPromoBps(10001)
         ).to.be.revertedWithCustomError(presaleReceipts, "InvalidPromoBps");
       });
 
       it("should enforce updated promo cap", async function () {
-        // Grant admin2 DEFAULT_ADMIN_ROLE for multi-sig
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.DEFAULT_ADMIN_ROLE(), admin2.address);
-        
-        // Set cap to 30% using multi-sig - first call proposes
+        // Since timelock is not active, setMaxPromoBps works normally
         await expect(
           presaleReceipts.connect(owner).setMaxPromoBps(3000)
-        ).to.emit(presaleReceipts, "OperationProposed");
-        
-        // Second call executes
-        await expect(
-          presaleReceipts.connect(admin2).setMaxPromoBps(3000)
         ).to.emit(presaleReceipts, "MaxPromoBpsUpdated");
 
+        // Cap should now be 3000 (30%)
         const usdtAmount = ethers.parseUnits("27", 6);
         const magaxAmount = ethers.parseUnits("100000", 18); // 100K MAGAX (27 USDT / 0.000270 = 100K MAGAX)
 
-        // Should accept 30% promo
+        // Should accept 30% promo (updated cap)
         await expect(
           presaleReceipts.connect(recorder).recordPurchaseWithPromo(
             buyer1.address,
@@ -1074,7 +1043,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
           )
         ).to.not.be.reverted;
 
-        // Should reject 31% promo
+        // Should reject 31% promo (over updated cap)
         await expect(
           presaleReceipts.connect(recorder).recordPurchaseWithPromo(
             buyer1.address,
@@ -1223,18 +1192,9 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
         const magaxAmount = ethers.parseUnits("100000", 18); // 100K MAGAX (27 USDT / 0.000270 = 100K MAGAX)
         const promoBps = 1500;
 
-        // Finalize the presale with multi-sig
-        // Grant FINALIZER_ROLE to owner for second confirmation
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.FINALIZER_ROLE(), owner.address);
-        
-        // First finalizer proposes - should emit OperationProposed
+        // Since timelock is not active, finalise() works normally
         await expect(
           presaleReceipts.connect(finalizer).finalise()
-        ).to.emit(presaleReceipts, "OperationProposed");
-
-        // Second finalizer confirms and executes
-        await expect(
-          presaleReceipts.connect(owner).finalise()
         ).to.emit(presaleReceipts, "Finalised");
 
         // Should reject promo purchases after finalization (contract is paused when finalized)
@@ -1279,16 +1239,9 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       });
 
       it("should handle large bonus percentages correctly", async function () {
-        // Set high cap for this test with multi-sig
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.DEFAULT_ADMIN_ROLE(), finalizer.address);
-        
-        // First admin proposes, second confirms
+        // Since timelock is not active, we can change the cap normally
         await expect(
           presaleReceipts.connect(owner).setMaxPromoBps(9000)
-        ).to.emit(presaleReceipts, "OperationProposed");
-        
-        await expect(
-          presaleReceipts.connect(finalizer).setMaxPromoBps(9000)
         ).to.emit(presaleReceipts, "MaxPromoBpsUpdated");
 
         const usdtAmount = ethers.parseUnits("27", 6);
@@ -1719,81 +1672,82 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
   });
 
-  describe("Multi-Signature Security", function () {
+  describe("Timelock Security (Post-Optimization)", function () {
     let admin1, admin2;
 
     beforeEach(async function () {
       [owner, recorder, buyer1, buyer2, buyer3, unauthorized, stageManager, emergencyAdmin, finalizer, admin1, admin2] = await ethers.getSigners();
       
-      // Grant additional admin roles for multi-sig testing
+      // Grant additional admin roles for testing
       await presaleReceipts.connect(owner).grantRole(await presaleReceipts.FINALIZER_ROLE(), admin1.address);
       await presaleReceipts.connect(owner).grantRole(await presaleReceipts.EMERGENCY_ROLE(), admin1.address);
-      await presaleReceipts.connect(owner).grantRole(await presaleReceipts.FINALIZER_ROLE(), admin2.address);
       await presaleReceipts.connect(owner).grantRole(await presaleReceipts.EMERGENCY_ROLE(), admin2.address);
       await presaleReceipts.connect(owner).grantRole(await presaleReceipts.DEFAULT_ADMIN_ROLE(), admin2.address);
     });
 
-    describe("Multi-Sig Finalization", function () {
-      it("Should require 2 confirmations to finalize", async function () {
-        // First finalizer proposes finalization - should emit OperationProposed
+    describe("Timelock-Protected Operations", function () {
+      it("Should work normally without timelock (contract deployed with ZeroAddress)", async function () {
+        // finalise() works normally when timelockActive is false
         await expect(
           presaleReceipts.connect(finalizer).finalise()
-        ).to.emit(presaleReceipts, "OperationProposed");
+        ).to.emit(presaleReceipts, "Finalised");
 
-        // Check that presale is not finalized yet
-        expect(await presaleReceipts.finalised()).to.be.false;
-
-        // Grant finalizer role to owner for second confirmation
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.FINALIZER_ROLE(), owner.address);
-
-        // Second finalizer confirms and executes
-        await expect(
-          presaleReceipts.connect(owner).finalise()
-        ).to.emit(presaleReceipts, "OperationExecuted")
-        .and.to.emit(presaleReceipts, "Finalised");
-
-        // Check that presale is now finalized
+        // Check that presale is finalized
         expect(await presaleReceipts.finalised()).to.be.true;
       });
 
-      it("Should emit correct events during multi-sig process", async function () {
-        // Grant finalizer role to owner for second confirmation
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.FINALIZER_ROLE(), owner.address);
-        
-        // First call should propose the operation
-        await expect(
-          presaleReceipts.connect(finalizer).finalise()
-        ).to.emit(presaleReceipts, "OperationProposed");
+      it("Should work normally for max promo BPS changes without timelock", async function () {
+        const newCap = 3000; // 30%
 
-        // Second call should emit OperationConfirmed and OperationExecuted
+        // setMaxPromoBps() works normally when timelockActive is false
         await expect(
-          presaleReceipts.connect(owner).finalise()
-        ).to.emit(presaleReceipts, "OperationConfirmed")
-        .and.to.emit(presaleReceipts, "OperationExecuted");
+          presaleReceipts.connect(owner).setMaxPromoBps(newCap)
+        ).to.emit(presaleReceipts, "MaxPromoBpsUpdated");
+
+        // Setting should have changed
+        expect(await presaleReceipts.maxPromoCapBps()).to.equal(newCap);
+      });
+
+      it("Should work normally for emergency token withdrawal without timelock", async function () {
+        // Send some tokens to the contract for testing
+        await mockToken.transfer(presaleReceipts.target, ethers.parseUnits("1000", 18));
+
+        // emergencyTokenWithdraw() works normally when timelockActive is false
+        await expect(
+          presaleReceipts.connect(emergencyAdmin).emergencyTokenWithdraw(mockToken.target, owner.address)
+        ).to.emit(presaleReceipts, "EmergencyTokenWithdraw");
+
+        // Tokens should be withdrawn
+        expect(await mockToken.balanceOf(presaleReceipts.target)).to.equal(0);
       });
     });
 
-    describe("Multi-Sig Emergency Withdrawal", function () {
+    describe("Immediate Emergency Withdrawal (3-of-3 Multi-Sig)", function () {
       beforeEach(async function () {
         // Send some tokens to the contract for testing
         await mockToken.transfer(presaleReceipts.target, ethers.parseUnits("1000", 18));
       });
 
-      it("Should require 2 confirmations for emergency token withdrawal", async function () {
+      it("Should require 3 confirmations for immediate emergency withdrawal", async function () {
         // First emergency admin proposes withdrawal - should emit OperationProposed
         await expect(
-          presaleReceipts.connect(emergencyAdmin).emergencyTokenWithdraw(mockToken.target, owner.address)
+          presaleReceipts.connect(emergencyAdmin).immediateEmergencyWithdraw(mockToken.target, owner.address)
         ).to.emit(presaleReceipts, "OperationProposed");
 
         // Tokens should still be in contract
         expect(await mockToken.balanceOf(presaleReceipts.target)).to.equal(ethers.parseUnits("1000", 18));
 
-        // Grant emergency role to finalizer for second confirmation
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.EMERGENCY_ROLE(), finalizer.address);
-
-        // Second emergency admin confirms and executes
+        // Second emergency admin confirms - should emit OperationConfirmed
         await expect(
-          presaleReceipts.connect(finalizer).emergencyTokenWithdraw(mockToken.target, owner.address)
+          presaleReceipts.connect(admin1).immediateEmergencyWithdraw(mockToken.target, owner.address)
+        ).to.emit(presaleReceipts, "OperationConfirmed");
+
+        // Still need third confirmation
+        expect(await mockToken.balanceOf(presaleReceipts.target)).to.equal(ethers.parseUnits("1000", 18));
+
+        // Third emergency admin confirms and executes - should emit EmergencyTokenWithdraw
+        await expect(
+          presaleReceipts.connect(admin2).immediateEmergencyWithdraw(mockToken.target, owner.address)
         ).to.emit(presaleReceipts, "EmergencyTokenWithdraw");
 
         // Tokens should be withdrawn
@@ -1802,75 +1756,21 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       });
     });
 
-    describe("Multi-Sig Promo Settings", function () {
-      it("Should require 2 confirmations to change max promo BPS", async function () {
-        const newCap = 3000; // 30%
-
-        // Grant DEFAULT_ADMIN_ROLE to finalizer for second confirmation
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.DEFAULT_ADMIN_ROLE(), finalizer.address);
-
-        // First admin proposes change - should emit OperationProposed
-        await expect(
-          presaleReceipts.connect(owner).setMaxPromoBps(newCap)
-        ).to.emit(presaleReceipts, "OperationProposed");
-
-        // Setting should not have changed
-        expect(await presaleReceipts.maxPromoCapBps()).to.equal(5000);
-
-        // Second admin confirms and executes
-        await expect(
-          presaleReceipts.connect(finalizer).setMaxPromoBps(newCap)
-        ).to.emit(presaleReceipts, "MaxPromoBpsUpdated")
-        .withArgs(5000, newCap, finalizer.address);
-
-        // Setting should now be changed
-        expect(await presaleReceipts.maxPromoCapBps()).to.equal(newCap);
-      });
-    });
-
-    describe("Operation Status and Management", function () {
-      it("Should track operation confirmations correctly", async function () {
-        // Grant finalizer role to emergencyAdmin for second confirmation
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.FINALIZER_ROLE(), emergencyAdmin.address);
-        
-        // Propose an operation - should emit OperationProposed
-        await expect(
-          presaleReceipts.connect(finalizer).finalise()
-        ).to.emit(presaleReceipts, "OperationProposed");
-
-        // For this test, we'll use a predictable operation hash (setMaxPromoBps)
-        // Grant admin role to emergencyAdmin
-        await presaleReceipts.connect(owner).grantRole(await presaleReceipts.DEFAULT_ADMIN_ROLE(), emergencyAdmin.address);
-        
-        // Propose a setMaxPromoBps operation - should emit OperationProposed
-        await expect(
-          presaleReceipts.connect(owner).setMaxPromoBps(6000)
-        ).to.emit(presaleReceipts, "OperationProposed");
-
-        // Calculate the operation hash for setMaxPromoBps
-        const operationHash = ethers.keccak256(
-          ethers.solidityPacked(["string", "uint16"], ["SET_MAX_PROMO_BPS", 6000])
-        );
-
-        // Check operation status
-        const [confirmations, isConfirmed] = await presaleReceipts.getOperationStatus(operationHash);
-        
-        // Should have 1 confirmation from the first call
-        expect(confirmations).to.equal(1);
-        expect(isConfirmed).to.be.true; // caller (owner) should have confirmed this operation
-      });
-    });
-
     describe("Role-Based Access Control", function () {
       it("Should enforce role requirements for sensitive functions", async function () {
-        // Only FINALIZER_ROLE can finalize
+        // Only FINALIZER_ROLE can finalize (but still needs timelock)
         await expect(
           presaleReceipts.connect(unauthorized).finalise()
         ).to.be.reverted;
 
-        // Only EMERGENCY_ROLE can emergency withdraw
+        // Only EMERGENCY_ROLE can emergency withdraw (but still needs timelock)
         await expect(
           presaleReceipts.connect(unauthorized).emergencyTokenWithdraw(mockToken.target, owner.address)
+        ).to.be.reverted;
+
+        // Only EMERGENCY_ROLE can immediate emergency withdraw
+        await expect(
+          presaleReceipts.connect(unauthorized).immediateEmergencyWithdraw(mockToken.target, owner.address)
         ).to.be.reverted;
 
         // Only STAGE_MANAGER_ROLE can configure stages

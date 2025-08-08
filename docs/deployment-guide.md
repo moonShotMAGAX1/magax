@@ -178,32 +178,33 @@ ETHEREUM_NETWORK=mainnet  # or sepolia for testnet
 POLYGON_NETWORK=polygon   # or polygonMumbai for testnet
 ```
 
-### 2. Role Configuration
+## Timelock Deployment
 
-The presale contract implements a role-based access control system with the following roles:
+⚠️ **CRITICAL SECURITY REQUIREMENTS**
 
-#### Core Roles
+The timelock deployment has strict security validations that will cause deployment to fail if not followed exactly:
 
-- **DEFAULT_ADMIN_ROLE**: Admin operations (pause/unpause, promo settings)
-- **RECORDER_ROLE**: Records presale purchases from backend service
-- **STAGE_MANAGER_ROLE**: Manages presale stages (configure, activate)  
-- **EMERGENCY_ROLE**: Emergency token withdrawals
-- **FINALIZER_ROLE**: Finalizes the presale
-
-#### Role Assignment
-
-The deployment script automatically assigns roles based on your `.env` configuration:
+### Required Parameters
 
 ```javascript
-// Core roles (assigned during deployment)
-await presaleContract.grantRole(RECORDER_ROLE, RECORDER_ADDRESS);
-await presaleContract.grantRole(DEFAULT_ADMIN_ROLE, ADMIN_ADDRESS);
-
-// Enhanced security roles (if different addresses provided)
-await presaleContract.grantRole(STAGE_MANAGER_ROLE, STAGE_MANAGER_ADDRESS);
-await presaleContract.grantRole(EMERGENCY_ROLE, EMERGENCY_ROLE_ADDRESS);
-await presaleContract.grantRole(FINALIZER_ROLE, FINALIZER_ROLE_ADDRESS);
+const minDelay = 172800; // MUST be exactly 48 hours (172800 seconds)
+const proposers = [/* multi-sig addresses */]; // At least one required
+const executors = [/* multi-sig addresses */];  // At least one required  
+const admin = ethers.ZeroAddress; // MUST be zero address for decentralization
 ```
+
+### Security Validations
+
+The deployment will **FAIL** if:
+
+- `minDelay` is not exactly 172800 seconds
+- `admin` is not `address(0)`
+- `proposers` array is empty
+- `executors` array is empty
+
+### Example Deployment
+
+```javascript
 
 #### Security Best Practices
 

@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/governance/TimelockController.sol";
 
 // Custom errors for gas efficiency
 error InvalidAddress();
@@ -25,6 +26,7 @@ error SelfReferral();
 error PresaleFinalised();
 error PriceMismatch();
 error InvalidPromoBps();
+error TimelockRequired();
 
 contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -34,11 +36,10 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
     bytes32 public constant FINALIZER_ROLE = keccak256("FINALIZER_ROLE");
 
-    // Multi-signature requirements for critical operations
-    uint8 public constant REQUIRED_CONFIRMATIONS = 2;
-    mapping(bytes32 => uint8) public operationConfirmations;
-    mapping(bytes32 => mapping(address => bool)) public operationConfirmed;
-    mapping(bytes32 => address[]) public operationConfirmers;
+    // Immediate emergency withdrawal tracking (3-of-3 multi-sig)
+    mapping(bytes32 => uint8) private immediateEmergencyConfirmations;
+    mapping(bytes32 => mapping(address => bool)) private immediateEmergencyConfirmed;
+    mapping(bytes32 => address[]) private immediateEmergencyConfirmers;
 
     // Purchase limits for security
     uint128 public constant MAX_PURCHASE_USDT = 1_000_000 * 1e6; // 1M USDT max per purchase
@@ -54,6 +55,11 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     uint16 public constant MAX_PROMO_BONUS_BPS = 5_000; // 50% max promo bonus
 
     uint16 public maxPromoCapBps = MAX_PROMO_BONUS_BPS;
+
+    // Timelock integration for enhanced security
+    address public immutable timelock;
+    bool public immutable timelockActive;
+    uint256 public constant TIMELOCK_DELAY = 48 hours; // 48-hour delay for critical operations
 
     struct Receipt {
         uint128 usdt;             // 6-decimals (128 bits)
@@ -179,60 +185,57 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address indexed executor
     );
 
-    constructor(address recorder) {
+    // Timelock events
+    event TimelockConfigured(
+        address indexed timelock,
+        uint256 delay
+    );
+
+    event TimelockOperationExecuted(
+        address indexed timelock,
+        address indexed executor,
+        string operationType
+    );
+
+    constructor(address recorder, address _timelock) {
         if (recorder == address(0)) revert InvalidAddress();
+        
+        // Validate timelock configuration if provided
+        if (_timelock != address(0)) {
+            TimelockController timelockContract = TimelockController(payable(_timelock));
+            uint256 currentDelay = timelockContract.getMinDelay();
+            require(currentDelay == TIMELOCK_DELAY, "Timelock: delay must be exactly 48 hours");
+        }
+        
+        // Assign roles to deployer initially
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(RECORDER_ROLE, recorder);
         _grantRole(STAGE_MANAGER_ROLE, msg.sender);
         _grantRole(EMERGENCY_ROLE, msg.sender);
         _grantRole(FINALIZER_ROLE, msg.sender);
-    }
-
-    /**
-     * @notice Propose or confirm a multi-sig operation
-     * @param operationHash Unique hash identifying the operation
-     * @param operationType Description of the operation type
-     * @return ready True if operation has enough confirmations to execute
-     */
-    function _handleMultiSig(bytes32 operationHash, string memory operationType) internal returns (bool ready) {
-        if (operationConfirmations[operationHash] == 0) {
-            // First time seeing this operation - propose it
-            operationConfirmations[operationHash] = 1;
-            operationConfirmed[operationHash][msg.sender] = true;
-            operationConfirmers[operationHash].push(msg.sender);
-            emit OperationProposed(operationHash, msg.sender, operationType);
-            return false; // Not ready to execute
-        } else if (!operationConfirmed[operationHash][msg.sender]) {
-            // Additional confirmation from new address
-            operationConfirmations[operationHash]++;
-            operationConfirmed[operationHash][msg.sender] = true;
-            operationConfirmers[operationHash].push(msg.sender);
-            emit OperationConfirmed(operationHash, msg.sender, operationConfirmations[operationHash]);
-            
-            if (operationConfirmations[operationHash] < REQUIRED_CONFIRMATIONS) {
-                return false; // Still not ready
-            }
-        } else {
-            // User has already confirmed - check if we can execute
-            if (operationConfirmations[operationHash] < REQUIRED_CONFIRMATIONS) {
-                return false; // Still not ready
-            }
-        }
         
-        // Ready to execute - but don't emit OperationExecuted yet (caller will do that after actual execution)
-        return true;
+        // Initialize timelock
+        timelock = _timelock;
+        timelockActive = _timelock != address(0);
+        
+        // If timelock is provided, grant it critical roles
+        if (_timelock != address(0)) {
+            _grantRole(DEFAULT_ADMIN_ROLE, _timelock);
+            _grantRole(FINALIZER_ROLE, _timelock);
+            _grantRole(EMERGENCY_ROLE, _timelock);
+            emit TimelockConfigured(_timelock, TIMELOCK_DELAY);
+        }
     }
 
     /**
-     * @notice Clean up multi-sig operation state after successful execution
+     * @notice Modifier to enforce timelock for critical operations
+     * @dev Critical operations must be called through the timelock contract after 48h delay
      */
-    function _cleanupMultiSig(bytes32 operationHash) internal {
-        address[] memory confirmers = operationConfirmers[operationHash];
-        for (uint256 i = 0; i < confirmers.length; i++) {
-            delete operationConfirmed[operationHash][confirmers[i]];
+    modifier requiresTimelock() {
+        if (timelockActive && msg.sender != timelock) {
+            revert TimelockRequired();
         }
-        delete operationConfirmations[operationHash];
-        delete operationConfirmers[operationHash];
+        _;
     }
 
     function recordPurchase(
@@ -637,33 +640,18 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         _unpause(); 
     }
 
-    function finalise() external onlyRole(FINALIZER_ROLE) {
-        bytes32 operationHash = keccak256("FINALIZE_PRESALE");
-        
-        if (!_handleMultiSig(operationHash, "FINALIZE_PRESALE")) {
-            return; // Proposed but not ready to execute
-        }
-        
-        // Execute the operation
+    function finalise() external onlyRole(FINALIZER_ROLE) requiresTimelock {
         finalised = true;
         _pause(); // Automatically pause to prevent accidental RECORDER_ROLE activity
         emit Finalised(uint40(block.timestamp));
         
-        // Emit after successful execution
-        emit OperationExecuted(operationHash, msg.sender);
-        
-        // Clean up
-        _cleanupMultiSig(operationHash);
+        if (timelockActive) {
+            emit OperationExecuted(keccak256("FINALIZE_PRESALE"), msg.sender);
+            emit TimelockOperationExecuted(timelock, msg.sender, "FINALIZE_PRESALE");
+        }
     }
 
-    function setMaxPromoBps(uint16 newCap) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        bytes32 operationHash = keccak256(abi.encodePacked("SET_MAX_PROMO_BPS", newCap));
-        
-        if (!_handleMultiSig(operationHash, "SET_MAX_PROMO_BPS")) {
-            return; // Proposed but not ready to execute
-        }
-        
-        // Execute the operation
+    function setMaxPromoBps(uint16 newCap) external onlyRole(DEFAULT_ADMIN_ROLE) requiresTimelock {
         if (newCap == 0 || newCap > BASIS_POINTS) revert InvalidPromoBps();
         
         uint16 oldCap = maxPromoCapBps;
@@ -671,22 +659,19 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         
         emit MaxPromoBpsUpdated(oldCap, newCap, msg.sender);
         
-        // Emit after successful execution
-        emit OperationExecuted(operationHash, msg.sender);
-        
-        // Clean up
-        _cleanupMultiSig(operationHash);
+        if (timelockActive) {
+            emit OperationExecuted(keccak256("SET_MAX_PROMO_BPS"), msg.sender);
+            emit TimelockOperationExecuted(timelock, msg.sender, "SET_MAX_PROMO_BPS");
+        }
     }
 
-    // Emergency token withdrawal for accidentally sent tokens
-    function emergencyTokenWithdraw(IERC20 token, address to) external onlyRole(EMERGENCY_ROLE) nonReentrant {
-        bytes32 operationHash = keccak256(abi.encodePacked("EMERGENCY_WITHDRAW", address(token), to));
-        
-        if (!_handleMultiSig(operationHash, "EMERGENCY_WITHDRAW")) {
-            return; // Proposed but not ready to execute
-        }
-        
-        // Execute the operation
+    /**
+     * @notice Emergency token withdrawal for accidentally sent tokens
+     * @dev Requires 48-hour timelock delay for planned recovery operations
+     * @param token The token contract to withdraw from
+     * @param to The address to send tokens to
+     */
+    function emergencyTokenWithdraw(IERC20 token, address to) external onlyRole(EMERGENCY_ROLE) requiresTimelock nonReentrant {
         if (to == address(0)) revert InvalidAddress();
         
         uint256 balance = token.balanceOf(address(this));
@@ -695,11 +680,66 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         token.safeTransfer(to, balance);
         emit EmergencyTokenWithdraw(address(token), to, balance);
         
-        // Emit after successful execution
+        if (timelockActive) {
+            emit OperationExecuted(keccak256(abi.encodePacked("EMERGENCY_WITHDRAW", address(token), to)), msg.sender);
+            emit TimelockOperationExecuted(timelock, msg.sender, "EMERGENCY_WITHDRAW");
+        }
+    }
+
+    /**
+     * @notice Immediate emergency token withdrawal for critical situations
+     * @dev Requires 3 EMERGENCY_ROLE confirmations to bypass timelock
+     * @param token The token contract to withdraw from
+     * @param to The address to send tokens to
+     */
+    function immediateEmergencyWithdraw(IERC20 token, address to) external onlyRole(EMERGENCY_ROLE) nonReentrant {
+        bytes32 operationHash = keccak256(abi.encodePacked("IMMEDIATE_EMERGENCY", address(token), to));
+        
+        // Inline 3-of-3 multi-sig logic
+        uint8 confirmations = immediateEmergencyConfirmations[operationHash];
+        
+        if (confirmations == 0) {
+            // First confirmation
+            immediateEmergencyConfirmations[operationHash] = 1;
+            immediateEmergencyConfirmed[operationHash][msg.sender] = true;
+            immediateEmergencyConfirmers[operationHash].push(msg.sender);
+            emit OperationProposed(operationHash, msg.sender, "IMMEDIATE_EMERGENCY");
+            return;
+        } else if (!immediateEmergencyConfirmed[operationHash][msg.sender]) {
+            // Additional confirmation
+            immediateEmergencyConfirmations[operationHash]++;
+            immediateEmergencyConfirmed[operationHash][msg.sender] = true;
+            immediateEmergencyConfirmers[operationHash].push(msg.sender);
+            emit OperationConfirmed(operationHash, msg.sender, immediateEmergencyConfirmations[operationHash]);
+            
+            // Require 3 confirmations for immediate emergency
+            if (immediateEmergencyConfirmations[operationHash] < 3) {
+                return; // Need more confirmations
+            }
+        } else {
+            // Already confirmed by this address
+            if (confirmations < 3) {
+                return; // Still need more confirmations
+            }
+        }
+        
+        // Execute immediate emergency withdrawal
+        if (to == address(0)) revert InvalidAddress();
+        
+        uint256 balance = token.balanceOf(address(this));
+        if (balance == 0) revert NoTokensToWithdraw();
+        
+        token.safeTransfer(to, balance);
+        emit EmergencyTokenWithdraw(address(token), to, balance);
         emit OperationExecuted(operationHash, msg.sender);
         
         // Clean up
-        _cleanupMultiSig(operationHash);
+        address[] memory confirmers = immediateEmergencyConfirmers[operationHash];
+        for (uint256 i = 0; i < confirmers.length; i++) {
+            delete immediateEmergencyConfirmed[operationHash][confirmers[i]];
+        }
+        delete immediateEmergencyConfirmations[operationHash];
+        delete immediateEmergencyConfirmers[operationHash];
     }
 
     // Prevent accidental ETH deposits
@@ -853,42 +893,5 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
      */
     function getUserPromoBonus(address user) external view returns (uint128) {
         return userPromoData[user].totalPromoBonus;
-    }
-
-    /**
-     * @notice Check the status of a pending operation
-     * @param operationHash The hash of the operation to check
-     * @return confirmations Number of confirmations received
-     * @return isConfirmedBy Whether the caller has confirmed this operation
-     * @return confirmers Array of addresses that have confirmed this operation
-     */
-    function getOperationStatus(bytes32 operationHash) external view returns (
-        uint8 confirmations,
-        bool isConfirmedBy,
-        address[] memory confirmers
-    ) {
-        return (
-            operationConfirmations[operationHash],
-            operationConfirmed[operationHash][msg.sender],
-            operationConfirmers[operationHash]
-        );
-    }
-
-    /**
-     * @notice Cancel a pending operation (only if you proposed it and it hasn't been executed)
-     * @param operationHash The hash of the operation to cancel
-     */
-    function cancelOperation(bytes32 operationHash) external {
-        require(operationConfirmations[operationHash] > 0, "Operation does not exist");
-        require(operationConfirmed[operationHash][msg.sender], "You have not confirmed this operation");
-        require(operationConfirmations[operationHash] < REQUIRED_CONFIRMATIONS, "Operation already executable");
-        
-        // Clean up all confirmation data
-        address[] memory confirmers = operationConfirmers[operationHash];
-        for (uint256 i = 0; i < confirmers.length; i++) {
-            delete operationConfirmed[operationHash][confirmers[i]];
-        }
-        delete operationConfirmations[operationHash];
-        delete operationConfirmers[operationHash];
     }
 }

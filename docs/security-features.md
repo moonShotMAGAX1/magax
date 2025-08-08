@@ -534,6 +534,49 @@ async function deploySecurely() {
 4. **Incident Response**: Clear procedures for security incidents
 5. **Community Reporting**: Bug bounty program for vulnerability disclosure
 
+## Timelock Security Enforcement
+
+The MAGAX timelock system includes multiple layers of security validation to prevent bypass attempts:
+
+### Critical Security Validations
+
+1. **Fixed 48-Hour Delay**: The timelock contract enforces exactly 172,800 seconds (48 hours) and rejects any other delay value during deployment
+2. **Zero Admin Requirement**: The timelock must be deployed with `address(0)` as admin to ensure full decentralization - no single entity can modify the delay
+3. **Cross-Contract Validation**: The presale contract validates that any connected timelock has the correct 48-hour delay
+4. **Immutable Configuration**: Once deployed, the timelock delay cannot be modified by anyone
+5. **Immutable Timelock Address**: The timelock address is immutable in the presale contract and cannot be changed after deployment
+
+### Protection Against Common Attacks
+
+- **Delay Bypass**: Impossible to deploy with shorter delays
+- **Admin Privilege Escalation**: No admin role exists to modify timelock parameters
+- **Configuration Tampering**: Presale rejects timelocks with incorrect delays
+- **Emergency Exploitation**: Emergency functions now properly enforce timelock delays
+
+## Emergency Withdrawal System
+
+The contract provides dual emergency withdrawal mechanisms to balance security with operational needs:
+
+### 1. Standard Emergency Withdrawal (48-hour delay)
+
+- **Function**: `emergencyTokenWithdraw(address tokenAddress, address to)`
+- **Security**: Requires 48-hour timelock delay
+- **Purpose**: Planned emergency situations with time for community review
+- **Process**: Must be scheduled through timelock, executed after delay
+
+### 2. Immediate Emergency Withdrawal (3-signature requirement)
+
+- **Function**: `immediateEmergencyWithdraw(address tokenAddress, address to)`
+- **Security**: Requires 3-of-N EMERGENCY_ROLE confirmations (no delay)
+- **Purpose**: Critical situations that cannot wait 48 hours
+- **Process**: Direct execution with higher multi-signature threshold
+
+This dual approach ensures that:
+
+- Routine emergency actions go through proper governance delays
+- True emergencies can be handled immediately with stronger consensus
+- Community has visibility into emergency decisions when time permits
+
 ## Next Steps
 
 - **[Event Reference](./event-reference.md)** - All contract events for monitoring
