@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/governance/TimelockController.sol";
 
 // Custom errors for gas efficiency
 error InvalidAddress();
@@ -26,7 +25,6 @@ error SelfReferral();
 error PresaleFinalised();
 error PriceMismatch();
 error InvalidPromoBps();
-error TimelockRequired();
 
 contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -35,11 +33,6 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     bytes32 public constant STAGE_MANAGER_ROLE = keccak256("STAGE_MANAGER_ROLE");
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
     bytes32 public constant FINALIZER_ROLE = keccak256("FINALIZER_ROLE");
-
-    // Immediate emergency withdrawal tracking (3-of-3 multi-sig)
-    mapping(bytes32 => uint8) private immediateEmergencyConfirmations;
-    mapping(bytes32 => mapping(address => bool)) private immediateEmergencyConfirmed;
-    mapping(bytes32 => address[]) private immediateEmergencyConfirmers;
 
     // Purchase limits for security
     uint128 public constant MAX_PURCHASE_USDT = 1_000_000 * 1e6; // 1M USDT max per purchase
@@ -55,11 +48,6 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     uint16 public constant MAX_PROMO_BONUS_BPS = 5_000; // 50% max promo bonus
 
     uint16 public maxPromoCapBps = MAX_PROMO_BONUS_BPS;
-
-    // Timelock integration for enhanced security
-    address public immutable timelock;
-    bool public immutable timelockActive;
-    uint256 public constant TIMELOCK_DELAY = 48 hours; // 48-hour delay for critical operations
 
     struct Receipt {
         uint128 usdt;             // 6-decimals (128 bits)
@@ -185,59 +173,28 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address indexed executor
     );
 
-    // Timelock events
-    event TimelockConfigured(
-        address indexed timelock,
-        uint256 delay
-    );
-
-    event TimelockOperationExecuted(
-        address indexed timelock,
-        address indexed executor,
-        string operationType
-    );
-
-    constructor(address recorder, address _timelock) {
+    constructor(address recorder, address stageManager, address admin) {
         if (recorder == address(0)) revert InvalidAddress();
+        if (stageManager == address(0)) revert InvalidAddress();
+        if (admin == address(0)) revert InvalidAddress();
         
-        // Validate timelock configuration if provided
-        if (_timelock != address(0)) {
-            TimelockController timelockContract = TimelockController(payable(_timelock));
-            uint256 currentDelay = timelockContract.getMinDelay();
-            require(currentDelay == TIMELOCK_DELAY, "Timelock: delay must be exactly 48 hours");
-        }
+        // Only the admin (timelock) gets all critical roles
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(STAGE_MANAGER_ROLE, admin);
+        _grantRole(EMERGENCY_ROLE, admin);
+        _grantRole(FINALIZER_ROLE, admin);
         
-        // Assign roles to deployer initially
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        // Grant operational roles to specified addresses
         _grantRole(RECORDER_ROLE, recorder);
-        _grantRole(STAGE_MANAGER_ROLE, msg.sender);
-        _grantRole(EMERGENCY_ROLE, msg.sender);
-        _grantRole(FINALIZER_ROLE, msg.sender);
-        
-        // Initialize timelock
-        timelock = _timelock;
-        timelockActive = _timelock != address(0);
-        
-        // If timelock is provided, grant it critical roles
-        if (_timelock != address(0)) {
-            _grantRole(DEFAULT_ADMIN_ROLE, _timelock);
-            _grantRole(FINALIZER_ROLE, _timelock);
-            _grantRole(EMERGENCY_ROLE, _timelock);
-            emit TimelockConfigured(_timelock, TIMELOCK_DELAY);
-        }
+        _grantRole(STAGE_MANAGER_ROLE, stageManager);
     }
 
     /**
-     * @notice Modifier to enforce timelock for critical operations
-     * @dev Critical operations must be called through the timelock contract after 48h delay
+     * @notice Record a new purchase receipt
+     * @param buyer The address of the buyer
+     * @param usdtAmount Amount of USDT paid
+     * @param magaxAmount Amount of MAGAX tokens received
      */
-    modifier requiresTimelock() {
-        if (timelockActive && msg.sender != timelock) {
-            revert TimelockRequired();
-        }
-        _;
-    }
-
     function recordPurchase(
         address buyer,
         uint128 usdtAmount,
@@ -640,38 +597,28 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         _unpause(); 
     }
 
-    function finalise() external onlyRole(FINALIZER_ROLE) requiresTimelock {
+    function finalise() external onlyRole(FINALIZER_ROLE) {
         finalised = true;
         _pause(); // Automatically pause to prevent accidental RECORDER_ROLE activity
         emit Finalised(uint40(block.timestamp));
-        
-        if (timelockActive) {
-            emit OperationExecuted(keccak256("FINALIZE_PRESALE"), msg.sender);
-            emit TimelockOperationExecuted(timelock, msg.sender, "FINALIZE_PRESALE");
-        }
     }
 
-    function setMaxPromoBps(uint16 newCap) external onlyRole(DEFAULT_ADMIN_ROLE) requiresTimelock {
+    function setMaxPromoBps(uint16 newCap) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newCap == 0 || newCap > BASIS_POINTS) revert InvalidPromoBps();
         
         uint16 oldCap = maxPromoCapBps;
         maxPromoCapBps = newCap;
         
         emit MaxPromoBpsUpdated(oldCap, newCap, msg.sender);
-        
-        if (timelockActive) {
-            emit OperationExecuted(keccak256("SET_MAX_PROMO_BPS"), msg.sender);
-            emit TimelockOperationExecuted(timelock, msg.sender, "SET_MAX_PROMO_BPS");
-        }
     }
 
     /**
      * @notice Emergency token withdrawal for accidentally sent tokens
-     * @dev Requires 48-hour timelock delay for planned recovery operations
+     * @dev Controlled by emergency role for security
      * @param token The token contract to withdraw from
      * @param to The address to send tokens to
      */
-    function emergencyTokenWithdraw(IERC20 token, address to) external onlyRole(EMERGENCY_ROLE) requiresTimelock nonReentrant {
+    function emergencyTokenWithdraw(IERC20 token, address to) external onlyRole(EMERGENCY_ROLE) nonReentrant {
         if (to == address(0)) revert InvalidAddress();
         
         uint256 balance = token.balanceOf(address(this));
@@ -679,67 +626,6 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         
         token.safeTransfer(to, balance);
         emit EmergencyTokenWithdraw(address(token), to, balance);
-        
-        if (timelockActive) {
-            emit OperationExecuted(keccak256(abi.encodePacked("EMERGENCY_WITHDRAW", address(token), to)), msg.sender);
-            emit TimelockOperationExecuted(timelock, msg.sender, "EMERGENCY_WITHDRAW");
-        }
-    }
-
-    /**
-     * @notice Immediate emergency token withdrawal for critical situations
-     * @dev Requires 3 EMERGENCY_ROLE confirmations to bypass timelock
-     * @param token The token contract to withdraw from
-     * @param to The address to send tokens to
-     */
-    function immediateEmergencyWithdraw(IERC20 token, address to) external onlyRole(EMERGENCY_ROLE) nonReentrant {
-        bytes32 operationHash = keccak256(abi.encodePacked("IMMEDIATE_EMERGENCY", address(token), to));
-        
-        // Inline 3-of-3 multi-sig logic
-        uint8 confirmations = immediateEmergencyConfirmations[operationHash];
-        
-        if (confirmations == 0) {
-            // First confirmation
-            immediateEmergencyConfirmations[operationHash] = 1;
-            immediateEmergencyConfirmed[operationHash][msg.sender] = true;
-            immediateEmergencyConfirmers[operationHash].push(msg.sender);
-            emit OperationProposed(operationHash, msg.sender, "IMMEDIATE_EMERGENCY");
-            return;
-        } else if (!immediateEmergencyConfirmed[operationHash][msg.sender]) {
-            // Additional confirmation
-            immediateEmergencyConfirmations[operationHash]++;
-            immediateEmergencyConfirmed[operationHash][msg.sender] = true;
-            immediateEmergencyConfirmers[operationHash].push(msg.sender);
-            emit OperationConfirmed(operationHash, msg.sender, immediateEmergencyConfirmations[operationHash]);
-            
-            // Require 3 confirmations for immediate emergency
-            if (immediateEmergencyConfirmations[operationHash] < 3) {
-                return; // Need more confirmations
-            }
-        } else {
-            // Already confirmed by this address
-            if (confirmations < 3) {
-                return; // Still need more confirmations
-            }
-        }
-        
-        // Execute immediate emergency withdrawal
-        if (to == address(0)) revert InvalidAddress();
-        
-        uint256 balance = token.balanceOf(address(this));
-        if (balance == 0) revert NoTokensToWithdraw();
-        
-        token.safeTransfer(to, balance);
-        emit EmergencyTokenWithdraw(address(token), to, balance);
-        emit OperationExecuted(operationHash, msg.sender);
-        
-        // Clean up
-        address[] memory confirmers = immediateEmergencyConfirmers[operationHash];
-        for (uint256 i = 0; i < confirmers.length; i++) {
-            delete immediateEmergencyConfirmed[operationHash][confirmers[i]];
-        }
-        delete immediateEmergencyConfirmations[operationHash];
-        delete immediateEmergencyConfirmers[operationHash];
     }
 
     // Prevent accidental ETH deposits

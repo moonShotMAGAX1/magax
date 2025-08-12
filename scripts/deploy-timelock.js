@@ -53,25 +53,32 @@ async function deployPresaleWithTimelock() {
     console.log("\nDeploying presale contract...");
     
     const recorder = process.env.RECORDER_ADDRESS;
+    const stageManager = process.env.STAGE_MANAGER_ADDRESS;
+    
     if (!recorder) {
         throw new Error("RECORDER_ADDRESS must be set in environment");
     }
+    if (!stageManager) {
+        throw new Error("STAGE_MANAGER_ADDRESS must be set in environment");
+    }
     
-    // Deploy presale with timelock
+    // Deploy presale with timelock as admin
     const MAGAXPresale = await ethers.getContractFactory("MAGAXPresaleReceipts");
-    const presale = await MAGAXPresale.deploy(recorder, timelockAddress);
+    const presale = await MAGAXPresale.deploy(recorder, stageManager, timelockAddress);
     await presale.waitForDeployment();
     
     const presaleAddress = await presale.getAddress();
     console.log("✅ Presale deployed to:", presaleAddress);
     
-    // Verify timelock integration
-    const isTimelockActive = await presale.timelockActive();
-    const contractTimelock = await presale.timelock();
+    // Verify admin role assignment
+    const DEFAULT_ADMIN_ROLE = await presale.DEFAULT_ADMIN_ROLE();
+    const isTimelockAdmin = await presale.hasRole(DEFAULT_ADMIN_ROLE, timelockAddress);
     
-    console.log("✅ Timelock integration active:", isTimelockActive);
-    console.log("✅ Contract timelock address:", contractTimelock);
-    console.log("✅ Addresses match:", contractTimelock === timelockAddress);
+    console.log("✅ Timelock has admin role:", isTimelockAdmin);
+    
+    // Remove references to timelock-specific properties that no longer exist
+    // const isTimelockActive = await presale.timelockActive();
+    // const contractTimelock = await presale.timelock();
     
     // Save deployment info
     const deploymentInfo = {
@@ -82,7 +89,7 @@ async function deployPresaleWithTimelock() {
         },
         presale: {
             address: presaleAddress,
-            timelockActive: isTimelockActive,
+            timelockIsAdmin: isTimelockAdmin,
         },
         timestamp: new Date().toISOString(),
         deployer: (await ethers.getSigners())[0].address

@@ -131,7 +131,7 @@ Verify contracts on their respective networks:
 npx hardhat verify --network sepolia <TOKEN_CONTRACT_ADDRESS> <TREASURY_ADDRESS>
 
 # Verify Presale contract on Polygon Mumbai
-npx hardhat verify --network polygonMumbai <PRESALE_CONTRACT_ADDRESS> <RECORDER_ADDRESS>
+npx hardhat verify --network polygonMumbai <PRESALE_CONTRACT_ADDRESS> <RECORDER_ADDRESS> <ADMIN_ADDRESS>
 ```
 
 ### 6. Deploy to Mainnet
@@ -205,6 +205,35 @@ The deployment will **FAIL** if:
 ### Example Deployment
 
 ```javascript
+npx hardhat run scripts/deploy-timelock.js --network polygon
+```
+
+This script will:
+
+1. Deploy the MAGAXTimelock contract with 48-hour delay
+2. Deploy the MAGAXPresaleReceipts contract with timelock as sole admin
+3. Verify that only the timelock has admin rights
+4. Save deployment information to `deployments/` folder
+
+### Governance Architecture
+
+**Key Change**: The timelock is now the **sole admin** of the presale contract:
+
+- **Before**: Both deployer and timelock had admin rights
+- **After**: Only timelock has admin rights for complete decentralization
+
+**Constructor Parameters**:
+
+- `recorder`: Address that can record purchases
+- `admin`: **Must be the timelock address** for governance
+
+**Deployment Flow**:
+
+1. Deploy timelock with deployer as proposer/executor
+2. Deploy presale with timelock as admin parameter
+3. Timelock automatically gets all critical roles
+4. Deployer gets temporary operational roles
+5. Use timelock to transfer/revoke roles as needed
 
 #### Security Best Practices
 

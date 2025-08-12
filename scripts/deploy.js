@@ -76,12 +76,12 @@ async function main () {
   const currency  = isEth ? "ETH" : "MATIC";
   const treasury  = env.TREASURY_ADDRESS;
   const recorder  = env.RECORDER_ADDRESS;
-  const admin     = env.ADMIN_ADDRESS || deployer.address;
+  const stageManager = env.STAGE_MANAGER_ADDRESS;
+  const admin     = env.ADMIN_ADDRESS; // Must be timelock address
   
-  // New role addresses with fallback to deployer for backward compatibility
-  const stageManager = env.STAGE_MANAGER_ADDRESS || deployer.address;
-  const emergencyRole = env.EMERGENCY_ROLE_ADDRESS || deployer.address;
-  const finalizerRole = env.FINALIZER_ROLE_ADDRESS || deployer.address;
+  // Optional role addresses - will be granted by timelock after deployment
+  const emergencyRole = env.EMERGENCY_ROLE_ADDRESS;
+  const finalizerRole = env.FINALIZER_ROLE_ADDRESS;
 
   console.log(`\nDeployer  : ${deployer.address}`);
   console.log(`Network   : ${net.name}  (chain ${chainId})`);
@@ -113,23 +113,18 @@ async function main () {
   }
 
   if (!ethers.isAddress(recorder)) throw new Error("RECORDER_ADDRESS missing / invalid");
+  if (!ethers.isAddress(stageManager)) throw new Error("STAGE_MANAGER_ADDRESS missing / invalid");
+  if (!ethers.isAddress(admin)) throw new Error("ADMIN_ADDRESS missing / invalid (must be timelock)");
 
   const Presale = await ethers.getContractFactory("MAGAXPresaleReceipts");
-  const presale = await deployWithPrettyGas("MAGAXPresaleReceipts", Presale, [recorder], { gasLimit: 4_000_000 });
+  const presale = await deployWithPrettyGas("MAGAXPresaleReceipts", Presale, [recorder, stageManager, admin], { gasLimit: 4_000_000 });
 
-  await setupRoles(presale, recorder, admin, stageManager, emergencyRole, finalizerRole, deployer);
+  await setupRoles(presale, emergencyRole, finalizerRole, deployer);
   await configureStage1(presale);
   
-  // Ensure deployer can activate stage (check admin role)
-  const ADMIN = await presale.DEFAULT_ADMIN_ROLE();
-  const hasAdminRole = await presale.hasRole(ADMIN, deployer.address);
-  if (!hasAdminRole) {
-    console.log("⚠️  Deployer doesn't have admin role, cannot activate stage");
-    console.log("You'll need to activate Stage 1 manually after deployment");
-  } else {
-    await presale.activateStage(1);
-    console.log("Stage 1 activated\n");
-  }
+  // Note: Deployer no longer has admin role - only timelock does
+  console.log("⚠️  Only timelock has admin privileges. Stage activation must be done through timelock.");
+  console.log("Stage 1 has been configured but not activated. Use timelock to activate when ready.");
 
   await dumpPresaleInfo(presale);
   
@@ -138,13 +133,13 @@ async function main () {
   try {
     await hre.run("verify:verify", {
       address: await presale.getAddress(),
-      constructorArguments: [recorder],
+      constructorArguments: [recorder, stageManager, admin],
     });
     console.log("Contract verified successfully\n");
   } catch (error) {
     console.log("Verification failed:", error.message);
     console.log("You can verify manually with:");
-    console.log(`npx hardhat verify --network ${net.name} ${await presale.getAddress()} "${recorder}"\n`);
+    console.log(`npx hardhat verify --network ${net.name} ${await presale.getAddress()} "${recorder}" "${stageManager}" "${admin}"\n`);
   }
   
   await writeArtifact("presale", net, presale, { 
@@ -169,45 +164,24 @@ async function deployWithPrettyGas (contractName, Factory, args = [], extra = {}
   return contract;
 }
 
-async function setupRoles (presale, recorder, admin, stageManager, emergencyRole, finalizerRole, deployer) {
-  console.log("Setting up roles…");
-  const ADMIN = await presale.DEFAULT_ADMIN_ROLE();
-  const RECORDER = await presale.RECORDER_ROLE();
-  const STAGE_MANAGER = await presale.STAGE_MANAGER_ROLE();
+async function setupRoles (presale, emergencyRole, finalizerRole, deployer) {
+  console.log("Setting up additional roles…");
   const EMERGENCY = await presale.EMERGENCY_ROLE();
   const FINALIZER = await presale.FINALIZER_ROLE();
 
-  // Grant RECORDER_ROLE
-  if (!(await presale.hasRole(RECORDER, recorder))) {
-    await (await presale.grantRole(RECORDER, recorder)).wait();
-    console.log(`✓ RECORDER_ROLE    → ${recorder}`);
-  }
-  
-  // Grant ADMIN role if different from deployer
-  if (admin && admin.toLowerCase() !== deployer.address.toLowerCase()) {
-    await (await presale.grantRole(ADMIN, admin)).wait();
-    console.log(`✓ DEFAULT_ADMIN    → ${admin}`);
-  }
-  
-  // Grant STAGE_MANAGER_ROLE if different from deployer
-  if (stageManager.toLowerCase() !== deployer.address.toLowerCase()) {
-    await (await presale.grantRole(STAGE_MANAGER, stageManager)).wait();
-    console.log(`✓ STAGE_MANAGER    → ${stageManager}`);
-  }
-  
-  // Grant EMERGENCY_ROLE if different from deployer
-  if (emergencyRole.toLowerCase() !== deployer.address.toLowerCase()) {
+  // Grant EMERGENCY_ROLE if provided and different from deployer
+  if (emergencyRole && ethers.isAddress(emergencyRole) && emergencyRole.toLowerCase() !== deployer.address.toLowerCase()) {
     await (await presale.grantRole(EMERGENCY, emergencyRole)).wait();
     console.log(`✓ EMERGENCY_ROLE   → ${emergencyRole}`);
   }
   
-  // Grant FINALIZER_ROLE if different from deployer
-  if (finalizerRole.toLowerCase() !== deployer.address.toLowerCase()) {
+  // Grant FINALIZER_ROLE if provided and different from deployer
+  if (finalizerRole && ethers.isAddress(finalizerRole) && finalizerRole.toLowerCase() !== deployer.address.toLowerCase()) {
     await (await presale.grantRole(FINALIZER, finalizerRole)).wait();
     console.log(`✓ FINALIZER_ROLE   → ${finalizerRole}`);
   }
   
-  console.log("Roles configured successfully\n");
+  console.log("Additional roles configured successfully\n");
 }
 
 async function configureStage1 (presale) {

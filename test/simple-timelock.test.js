@@ -9,7 +9,7 @@ describe("Simple Timelock Test", function () {
         
         // Deploy presale without timelock
         const MAGAXPresale = await ethers.getContractFactory("MAGAXPresaleReceipts");
-        presale = await MAGAXPresale.deploy(owner.address, ethers.ZeroAddress);
+        presale = await MAGAXPresale.deploy(owner.address, owner.address, owner.address); // Use owner for all roles in test
         await presale.waitForDeployment();
     });
     

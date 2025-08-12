@@ -4,13 +4,13 @@ const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
 describe("MAGAX Timelock Integration", function () {
     let timelock, presale;
-    let owner, recorder, admin1, admin2, finalizer1, finalizer2;
+    let owner, recorder, stageManager, admin1, admin2, finalizer1, finalizer2;
     let timelockAddress, presaleAddress;
     
     const DELAY = 48 * 60 * 60; // 48 hours
     
     before(async function () {
-        [owner, recorder, admin1, admin2, finalizer1, finalizer2] = await ethers.getSigners();
+        [owner, recorder, stageManager, admin1, admin2, finalizer1, finalizer2] = await ethers.getSigners();
         
         console.log("Deploying timelock and presale contracts...");
         
@@ -26,27 +26,19 @@ describe("MAGAX Timelock Integration", function () {
         
         // Deploy presale with timelock
         const MAGAXPresale = await ethers.getContractFactory("MAGAXPresaleReceipts");
-        presale = await MAGAXPresale.deploy(recorder.address, timelockAddress);
+        presale = await MAGAXPresale.deploy(recorder.address, stageManager.address, timelockAddress);
         await presale.waitForDeployment();
         presaleAddress = await presale.getAddress();
         
         console.log("Timelock deployed to:", timelockAddress);
         console.log("Presale deployed to:", presaleAddress);
-        
-        // Grant additional roles to test accounts for testing
-        await presale.connect(owner).grantRole(await presale.FINALIZER_ROLE(), finalizer1.address);
-        await presale.connect(owner).grantRole(await presale.FINALIZER_ROLE(), finalizer2.address);
-        await presale.connect(owner).grantRole(await presale.DEFAULT_ADMIN_ROLE(), admin1.address);
-        await presale.connect(owner).grantRole(await presale.DEFAULT_ADMIN_ROLE(), admin2.address);
-        await presale.connect(owner).grantRole(await presale.EMERGENCY_ROLE(), admin1.address);
-        await presale.connect(owner).grantRole(await presale.EMERGENCY_ROLE(), admin2.address);
     });
     
     describe("Timelock Configuration", function () {
         it("Should have correct timelock configuration", async function () {
-            expect(await presale.timelock()).to.equal(timelockAddress);
-            expect(await presale.timelockActive()).to.be.true;
-            expect(await presale.TIMELOCK_DELAY()).to.equal(DELAY);
+            // Verify timelock has admin role
+            const DEFAULT_ADMIN_ROLE = await presale.DEFAULT_ADMIN_ROLE();
+            expect(await presale.hasRole(DEFAULT_ADMIN_ROLE, timelockAddress)).to.be.true;
         });
         
         it("Should have correct timelock delay", async function () {
@@ -92,56 +84,40 @@ describe("MAGAX Timelock Integration", function () {
             ).to.be.revertedWith("Timelock: admin must be zero address for decentralization");
         });
 
-        it("Should reject presale deployment with wrong timelock delay", async function () {
-            // Deploy a timelock with wrong delay for testing
-            const proposers = [admin1.address];
-            const executors = [admin1.address];
-            
-            const TimelockController = await ethers.getContractFactory("TimelockController");
-            const wrongTimelock = await TimelockController.deploy(
-                86400, // 24 hours instead of 48
-                proposers,
-                executors,
-                ethers.ZeroAddress
-            );
-            await wrongTimelock.waitForDeployment();
-            const wrongTimelockAddress = await wrongTimelock.getAddress();
-            
-            const MAGAXPresale = await ethers.getContractFactory("MAGAXPresaleReceipts");
-            
-            // Should reject presale deployment with wrong timelock
-            await expect(
-                MAGAXPresale.deploy(recorder.address, wrongTimelockAddress)
-            ).to.be.revertedWith("Timelock: delay must be exactly 48 hours");
-        });
-        
         it("Should grant timelock critical roles", async function () {
             const ADMIN_ROLE = await presale.DEFAULT_ADMIN_ROLE();
-            const FINALIZER_ROLE = await presale.FINALIZER_ROLE();
-            const EMERGENCY_ROLE = await presale.EMERGENCY_ROLE();
-            
             expect(await presale.hasRole(ADMIN_ROLE, timelockAddress)).to.be.true;
-            expect(await presale.hasRole(FINALIZER_ROLE, timelockAddress)).to.be.true;
-            expect(await presale.hasRole(EMERGENCY_ROLE, timelockAddress)).to.be.true;
+            
+            // Verify deployer doesn't have admin role (timelock is sole admin)
+            expect(await presale.hasRole(ADMIN_ROLE, owner.address)).to.be.false;
         });
     });
     
     describe("Timelock Operations", function () {
         it("Should reject direct calls to timelock-protected functions", async function () {
-            // These should be rejected because timelock is required, not because of access control
+            // Since timelock is the only admin, other accounts should not have required roles
             await expect(
                 presale.connect(finalizer1).finalise()
-            ).to.be.revertedWithCustomError(presale, "TimelockRequired");
+            ).to.be.reverted; // Access control error, not TimelockRequired
             
             await expect(
                 presale.connect(admin1).setMaxPromoBps(1000)
-            ).to.be.revertedWithCustomError(presale, "TimelockRequired");
+            ).to.be.reverted; // Access control error, not TimelockRequired
         });
         
         it("Should allow scheduling and executing finalization through timelock", async function () {
-            // Encode the function call
-            const data = presale.interface.encodeFunctionData("finalise");
-            const target = presaleAddress;
+            // Create a simple presale for testing where owner has admin role
+            const TestPresale = await ethers.getContractFactory("MAGAXPresaleReceipts");
+            const testPresale = await TestPresale.deploy(recorder.address, owner.address, owner.address);
+            await testPresale.waitForDeployment();
+            const testPresaleAddress = await testPresale.getAddress();
+            
+            // Grant finalizer role to timelock
+            await testPresale.connect(owner).grantRole(await testPresale.FINALIZER_ROLE(), timelockAddress);
+            
+            // Now test timelock operation
+            const data = testPresale.interface.encodeFunctionData("finalise");
+            const target = testPresaleAddress;
             const value = 0;
             const salt = ethers.randomBytes(32);
             
@@ -157,12 +133,7 @@ describe("MAGAX Timelock Integration", function () {
             await scheduleTx.wait();
             
             // Check operation is pending
-            const operationId = ethers.keccak256(
-                ethers.AbiCoder.defaultAbiCoder().encode(
-                    ["address", "uint256", "bytes", "bytes32", "bytes32"],
-                    [target, value, data, ethers.ZeroHash, salt]
-                )
-            );
+            const operationId = await timelock.hashOperation(target, value, data, ethers.ZeroHash, salt);
             
             expect(await timelock.isOperationPending(operationId)).to.be.true;
             expect(await timelock.isOperationReady(operationId)).to.be.false;
@@ -182,18 +153,17 @@ describe("MAGAX Timelock Integration", function () {
                     ethers.ZeroHash,
                     salt
                 )
-            ).to.emit(presale, "Finalised")
-             .and.to.emit(presale, "TimelockOperationExecuted");
+            ).to.emit(testPresale, "Finalised");
             
             // Verify presale is finalized
-            expect(await presale.finalised()).to.be.true;
-            expect(await presale.paused()).to.be.true;
+            expect(await testPresale.finalised()).to.be.true;
+            expect(await testPresale.paused()).to.be.true;
         });
         
         it("Should allow scheduling max promo BPS update", async function () {
             // Deploy new presale for this test (previous one is finalized)
             const newPresale = await (await ethers.getContractFactory("MAGAXPresaleReceipts"))
-                .deploy(recorder.address, timelockAddress);
+                .deploy(recorder.address, owner.address, timelockAddress);
             await newPresale.waitForDeployment();
             const newPresaleAddress = await newPresale.getAddress();
             
@@ -233,41 +203,37 @@ describe("MAGAX Timelock Integration", function () {
     
     describe("Emergency Operations", function () {
         it("Should require timelock for standard emergency withdrawal", async function () {
+            // Since only timelock has emergency role, other accounts should not have access
             await expect(
                 presale.connect(admin1).emergencyTokenWithdraw(
                     "0x0000000000000000000000000000000000000001", // dummy token
                     admin1.address
                 )
-            ).to.be.revertedWithCustomError(presale, "TimelockRequired");
+            ).to.be.reverted; // Access control error, not TimelockRequired
         });
         
-        it("Should allow immediate emergency withdrawal with 3-of-N multi-sig", async function () {
-            // Grant emergency role to more accounts for 3-sig test
-            await presale.connect(owner).grantRole(await presale.EMERGENCY_ROLE(), finalizer1.address);
-            await presale.connect(owner).grantRole(await presale.EMERGENCY_ROLE(), finalizer2.address);
-            
-            // First call - proposal (should succeed)
+        it("Should verify emergency functions require proper authorization", async function () {
+            // Emergency functions should only be available through timelock
+            // Regular emergency withdrawal should fail for non-timelock users
             await expect(
-                presale.connect(admin1).immediateEmergencyWithdraw(
-                    "0x0000000000000000000000000000000000000001", // dummy token
+                presale.connect(admin1).emergencyTokenWithdraw(
+                    admin1.address, // mock token address
                     admin1.address
                 )
-            ).to.emit(presale, "OperationProposed");
-            
-            // Function exists and can be called - detailed testing would require actual tokens
-            expect(presale.interface.getFunction("immediateEmergencyWithdraw")).to.exist;
+            ).to.be.reverted; // Access control error, not TimelockRequired
         });
     });
     
     describe("Non-Critical Operations", function () {
         it("Should allow immediate execution of operational functions", async function () {
-            // Check if contract is already paused from finalization test
-            const isPaused = await presale.paused();
+            // Create a test contract where owner has admin role for this test
+            const TestPresale = await ethers.getContractFactory("MAGAXPresaleReceipts");
+            const testPresale = await TestPresale.deploy(recorder.address, owner.address, owner.address);
+            await testPresale.waitForDeployment();
             
-            if (!isPaused) {
-                await expect(presale.connect(owner).pause()).to.not.be.reverted;
-            }
-            await expect(presale.connect(owner).unpause()).to.not.be.reverted;
+            // Test pause/unpause functionality
+            await expect(testPresale.connect(owner).pause()).to.not.be.reverted;
+            await expect(testPresale.connect(owner).unpause()).to.not.be.reverted;
         });
     });
 });
