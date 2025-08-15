@@ -42,6 +42,8 @@ async function main() {
     console.log("2. Deploy timelock: npx hardhat run scripts/deploy-timelock.js --network amoy");
     console.log("3. Copy timelock address to ADMIN_ADDRESS in .env");
     console.log("4. Deploy presale: npx hardhat run scripts/deploy.js --network amoy");
+    console.log("\n📝 Add this to your .env file:");
+    console.log(`TIMELOCK_PROPOSERS=${multiSigAddress}`);
     
     return multiSigAddress;
 }
