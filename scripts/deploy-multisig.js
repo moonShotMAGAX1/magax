@@ -6,14 +6,12 @@ async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying with account:", deployer.address);
     
-    // Replace with your actual test addresses
-    const owners = [
-        deployer.address,                                      // Your address
-        "0x2345678901234567890123456789012345678901",         // Test address 2
-        "0x3456789012345678901234567890123456789012"          // Test address 3
-    ];
+    // Get owners from environment or use defaults
+    const owner1 = process.env.MULTISIG_OWNER_1;
+    const owner2 = process.env.MULTISIG_OWNER_2;
     
-    const required = 2; // 2-of-3 multi-sig
+    const owners = [owner1, owner2];
+    const required = parseInt(process.env.MULTISIG_REQUIRED || "2"); // 2-of-2 by default
     
     console.log("Multi-sig configuration:");
     console.log("Owners:", owners);
@@ -36,9 +34,16 @@ async function main() {
     console.log("Actual owners:", actualOwners);
     console.log("Actual required:", actualRequired.toString());
     
+    console.log("\n📝 Add these to your .env file:");
+    console.log(`SIMPLE_MULTISIG_ADDRESS=${multiSigAddress}`);
+    console.log(`MULTISIG_PROPOSER_1_ADDRESS=${multiSigAddress}`);
+    console.log("\n📋 Next steps:");
+    console.log("1. Add SIMPLE_MULTISIG_ADDRESS to .env");
+    console.log("2. Deploy timelock: npx hardhat run scripts/deploy-timelock.js --network amoy");
+    console.log("3. Copy timelock address to ADMIN_ADDRESS in .env");
+    console.log("4. Deploy presale: npx hardhat run scripts/deploy.js --network amoy");
     console.log("\n📝 Add this to your .env file:");
     console.log(`TIMELOCK_PROPOSERS=${multiSigAddress}`);
-    console.log(`TIMELOCK_EXECUTORS=${multiSigAddress}`);
     
     return multiSigAddress;
 }

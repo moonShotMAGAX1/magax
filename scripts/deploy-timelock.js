@@ -1,5 +1,15 @@
 const { ethers } = require("hardhat");
 
+/**
+ * Deploy MAGAX Timelock with Multi-Sig Governance
+ * 
+ * Architecture:
+ * - Multi-sig contracts (Gnosis Safe, SimpleMultiSig) act as proposers/executors
+ * - Timelock enforces 48-hour delays on all operations
+ * - Presale contract receives admin commands only from timelock
+ * - No individual EOAs have direct timelock control in production
+ */
+
 async function deployTimelock() {
     console.log("Deploying MAGAX Timelock with 48-hour delay...");
     
@@ -10,20 +20,26 @@ async function deployTimelock() {
     const minDelay = 48 * 60 * 60;
     console.log("Timelock delay:", minDelay, "seconds (48 hours)");
     
-    // Multi-sig addresses that can propose/execute
+    // Multi-sig contract addresses that can propose/execute
+    // Use actual multi-sig contract addresses (e.g., Gnosis Safe, SimpleMultiSig)
     const proposers = [
-        process.env.ADMIN_ADDRESS || deployer.address,
-        process.env.ADMIN_2_ADDRESS || deployer.address,
-        process.env.FINALIZER_ROLE_ADDRESS || deployer.address,
-        process.env.FINALIZER_2_ADDRESS || deployer.address,
-        process.env.EMERGENCY_ROLE_ADDRESS || deployer.address,
-        process.env.EMERGENCY_2_ADDRESS || deployer.address
-    ].filter((addr, index, arr) => arr.indexOf(addr) === index); // Remove duplicates
+        process.env.MULTISIG_PROPOSER_1_ADDRESS,  // Primary multi-sig contract
+        process.env.MULTISIG_PROPOSER_2_ADDRESS,  // Secondary multi-sig contract
+        process.env.GNOSIS_SAFE_ADDRESS,         // Gnosis Safe contract
+        process.env.SIMPLE_MULTISIG_ADDRESS      // SimpleMultiSig contract
+    ].filter(addr => addr && addr !== ""); // Remove empty addresses
     
-    const executors = proposers; // Same addresses can execute
+    // Validate that we have at least one multi-sig address
+    if (proposers.length === 0) {
+        console.warn("⚠️  No multi-sig addresses configured, using deployer as fallback");
+        proposers.push(deployer.address);
+    }
+    
+    const executors = proposers; // Same multi-sig contracts can execute
     const admin = ethers.ZeroAddress; // No admin role for full decentralization
     
-    console.log("Proposers/Executors:", proposers);
+    console.log("Multi-sig Proposers/Executors:", proposers);
+    console.log("Expected contract types: Gnosis Safe, SimpleMultiSig, or similar");
     
     // Deploy timelock
     const MAGAXTimelock = await ethers.getContractFactory("MAGAXTimelock");
@@ -121,8 +137,9 @@ async function main() {
         console.log("\n📋 Next Steps:");
         console.log("1. Verify contracts on block explorer");
         console.log("2. Test timelock operations on testnet");
-        console.log("3. Configure multi-sig wallets as proposers/executors");
-        console.log("4. Update frontend to use timelock for critical operations");
+        console.log("3. Ensure multi-sig contracts are properly configured as proposers/executors");
+        console.log("4. Test multi-sig → timelock → presale operation flow");
+        console.log("5. Update frontend to use timelock for critical operations");
         
     } catch (error) {
         console.error("❌ Deployment failed:", error.message);
