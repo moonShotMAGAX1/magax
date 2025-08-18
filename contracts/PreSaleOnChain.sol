@@ -693,6 +693,43 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         _processPromoLaunch(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, totalTokens, stage, stageInfo, timestamp);
     }
 
+    /**
+     * @notice Record a purchase with both promotional and referral bonuses
+     * @param buyer The address of the buyer
+     * @param usdtAmount Amount of USDT spent (6 decimals)
+     * @param magaxAmount Base MAGAX amount purchased (18 decimals, before bonuses)
+     * @param promoBps Promotional bonus percentage in basis points (e.g., 1500 = 15%)
+     * @param referrer The address of the referrer
+     * @dev This function combines promo and referral bonuses in a single transaction
+     * @dev Referral bonuses are calculated on the base amount (not including promo bonus)
+     * @dev Total tokens = base + promo bonus + referee bonus, referrer gets referrer bonus
+     */
+    function recordPurchaseWithPromoAndReferral(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        uint16  promoBps,
+        address referrer
+    ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
+        if (finalised) revert PresaleFinalised();
+
+        _validatePromoBps(promoBps);
+        _validateReferralPurchase(buyer, usdtAmount, magaxAmount, referrer);
+
+        uint8 stage = currentStage;
+        StageInfo storage stageInfo = stages[stage];
+        if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
+        if (!stageInfo.isActive) revert StageNotActive();
+
+        _validatePrice(usdtAmount, magaxAmount, stageInfo.pricePerToken);
+
+        _processPromoAndReferralPurchase(
+            buyer, usdtAmount, magaxAmount, promoBps, referrer,
+            uint40(block.timestamp), stage, stageInfo
+        );
+    }
+
+
     function _validatePromoBps(uint16 promoBps) internal view {
         if (promoBps == 0 || promoBps > maxPromoCapBps) revert InvalidPromoBps();
     }
@@ -771,6 +808,64 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         emit PurchaseRecorded(buyer, usdtAmount, magaxAmount, timestamp, stage, userReceipts[buyer].length, isNewBuyer);
         emit PromoUsed(buyer, promoBps, promoBonus, stage, bonusReceiptIdx);
     }
+
+    function _processPromoAndReferralPurchase(
+        address buyer,
+        uint128 usdtAmount,
+        uint128 magaxAmount,
+        uint16  promoBps,
+        address referrer,
+        uint40  timestamp,
+        uint8   stage,
+        StageInfo storage stageInfo
+    ) internal {
+        _setReferrerIfNeeded(buyer, referrer);
+
+        // bonuses (referral based on base only)
+        uint128 promoBonus; unchecked { promoBonus = (magaxAmount * promoBps) / BASIS_POINTS; }
+        (uint128 referrerBonus, uint128 refereeBonus, ) = _calculateBonuses(magaxAmount);
+
+        uint128 totalBuyerTokens = magaxAmount + promoBonus + refereeBonus;
+        uint128 totalStageTokens = totalBuyerTokens + referrerBonus;
+
+        if (stageInfo.tokensSold + totalStageTokens > stageInfo.tokensAllocated) {
+            revert InsufficientStageTokens();
+        }
+
+        bool isNewBuyer = (userTotalUSDT[buyer] == 0);
+
+        // receipts (main, promo, referee; referrer gets separate receipt)
+        userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
+        userReceipts[buyer].push(Receipt(0, promoBonus,   timestamp, stage, true));
+        userReceipts[buyer].push(Receipt(0, refereeBonus, timestamp, stage, true));
+        userReceipts[referrer].push(Receipt(0, referrerBonus, timestamp, stage, true));
+
+        // totals
+        userTotalUSDT[buyer]  += usdtAmount;
+        userTotalMAGAX[buyer] += totalBuyerTokens;
+        userTotalMAGAX[referrer] += referrerBonus;
+        userPromoData[buyer].totalPromoBonus += promoBonus;
+
+        unchecked { referralData[referrer].totalReferrals++; }
+        referralData[referrer].totalBonusEarned += referrerBonus;
+        referralData[buyer].totalRefereeBonus   += refereeBonus;
+
+        totalUSDT  += usdtAmount;
+        totalMAGAX += totalStageTokens;
+        if (isNewBuyer) { unchecked { totalBuyers++; } }
+
+        unchecked { stageInfo.tokensSold += totalStageTokens; }
+
+        // events (promo receipt index is length-2 after the three pushes)
+        emit PurchaseRecorded(buyer, usdtAmount, magaxAmount, timestamp, stage, userReceipts[buyer].length, isNewBuyer);
+        emit PromoUsed(buyer, promoBps, promoBonus, stage, userReceipts[buyer].length - 2);
+        emit ReferralBonusAwarded(referrer, buyer, referrerBonus, refereeBonus, stage);
+
+        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
+            emit StageCompleted(stage, stageInfo.tokensSold);
+        }
+    }
+
 
     /**
      * @notice Get user's total promo bonus earned
