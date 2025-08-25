@@ -262,7 +262,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         StageInfo storage stageInfo,
         uint40 timestamp
     ) internal {
-        bool isNewBuyer = userTotalUSDT[buyer] == 0;
+        // Auditor recommendation: standardize new buyer detection using receipt existence
+        bool isNewBuyer = userReceipts[buyer].length == 0;
         
         userReceipts[buyer].push(
             Receipt(usdtAmount, magaxAmount, timestamp, stage, false)
@@ -749,7 +750,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         StageInfo storage stageInfo,
         uint40 timestamp
     ) internal {
-        bool isNewBuyer = userTotalUSDT[buyer] == 0;
+        // Auditor recommendation: use receipt count for new buyer detection
+        bool isNewBuyer = userReceipts[buyer].length == 0;
         
         // Record main purchase receipt
         userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
@@ -832,7 +834,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
             revert InsufficientStageTokens();
         }
 
-        bool isNewBuyer = (userTotalUSDT[buyer] == 0);
+        // Auditor recommendation: use receipt existence instead of USDT total
+        bool isNewBuyer = userReceipts[buyer].length == 0;
 
         // receipts (main, promo, referee; referrer gets separate receipt)
         userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
