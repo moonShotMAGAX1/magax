@@ -43,6 +43,8 @@ async function main() {
     console.log("  Contract paused:", isPaused);
     console.log("  Stage price per token (USDT):", ethers.formatUnits(stageInfo.pricePerToken, 6));
     console.log("  Tokens allocated:", ethers.formatUnits(stageInfo.tokensAllocated, 18));
+    console.log("  USD target:", ethers.formatUnits(stageInfo.usdTarget, 6));
+    console.log("  USD raised:", ethers.formatUnits(stageInfo.usdRaised, 6));
     console.log("  Tokens sold:", ethers.formatUnits(stageInfo.tokensSold, 18));
     console.log("  Stage active:", stageInfo.isActive);
     console.log("-".repeat(50));
@@ -148,9 +150,15 @@ async function main() {
     const finalStageInfo = await presale.stages(currentStage);
     console.log("Final Stage State:");
     console.log("  Tokens sold:", ethers.formatUnits(finalStageInfo.tokensSold, 18));
-    console.log("  Remaining tokens:", ethers.formatUnits(
-      finalStageInfo.tokensAllocated - finalStageInfo.tokensSold, 18
-    ));
+    if (finalStageInfo.tokensAllocated > 0n) {
+      console.log("  Remaining tokens:", ethers.formatUnits(
+        finalStageInfo.tokensAllocated - finalStageInfo.tokensSold, 18
+      ));
+    } else {
+      console.log("  Remaining tokens: unlimited (stage token cap disabled)");
+    }
+    console.log("  USD target:", ethers.formatUnits(finalStageInfo.usdTarget, 6));
+    console.log("  USD raised:", ethers.formatUnits(finalStageInfo.usdRaised, 6));
     
   } catch (error) {
     console.error("ERROR: Script error:", error.message);

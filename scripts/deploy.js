@@ -184,14 +184,19 @@ async function setupRoles (presale, emergencyRole, finalizerRole, deployer) {
   console.log("Additional roles configured successfully\n");
 }
 
+function computeUsdTarget(tokensAlloc18, price6) {
+  // tokensAlloc18 (18-dec) * price6 (6-dec) / 1e18 -> 6-dec result
+  return (tokensAlloc18 * price6) / BigInt(1e18);
+}
+
 async function configureStage1 (presale) {
   console.log("\nConfiguring Stage 1 …");
-  // Stage 1: $0.000270 per token, 200,000,000 tokens allocation
   const stage1 = STAGES.find(cfg => cfg.stage === 1);
   const price = ethers.parseUnits(stage1.price, 6);
   const alloc = ethers.parseUnits(stage1.tokens, 18);
-  await presale.configureStage(1, price, alloc);
-  console.log(`Stage 1 configured @ $${stage1.price} with ${stage1.tokens} tokens\n`);
+  const usdTarget = ethers.parseUnits("54000", 6); // Fixed target: $54,000 USDT
+  await presale.configureStage(1, price, alloc, usdTarget);
+  console.log(`Stage 1 configured @ $${stage1.price} with ${stage1.tokens} tokens (usdTarget=54,000 USDT)\n`);
 }
 
 async function dumpTokenInfo (token, treasury) {

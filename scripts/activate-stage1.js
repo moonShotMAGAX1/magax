@@ -40,8 +40,8 @@ async function main() {
     // Stage 1 configuration from deploy.js
     const stage1Config = {
         stage: 1,
-        price: "0.000270", // USDT per MAGAX token
-        tokens: "200000000" // Total tokens for stage 1
+        price: "0.000270", // USDT per MAGAX token (6 decimals)
+        tokens: "200000000" // Total tokens for stage 1 (18 decimals when parsed)
     };
     
     console.log("\nStage 1 Configuration:");
@@ -52,21 +52,25 @@ async function main() {
     // Convert to contract format
     const pricePerToken = ethers.parseUnits(stage1Config.price, 6); // 6 decimals for USDT
     const tokensAllocated = ethers.parseUnits(stage1Config.tokens, 18); // 18 decimals for MAGAX
+    const usdTarget = ethers.parseUnits("54000", 6); // Fixed $54,000 target
     
     console.log("\nContract values:");
-    console.log("  Price per token (wei):", pricePerToken.toString());
-    console.log("  Tokens allocated (wei):", tokensAllocated.toString());
+    console.log("  Price per token (raw 6d):", pricePerToken.toString());
+    console.log("  Tokens allocated (raw 18d):", tokensAllocated.toString());
+    console.log("  USD target (raw 6d):", usdTarget.toString());
     
     try {
         // Check current stage state
         console.log("\nChecking current stage state...");
         const currentStage = await presale.currentStage();
-        const stageInfo = await presale.stages(1);
+    const stageInfo = await presale.stages(1);
         
         console.log("Current stage:", currentStage.toString());
         console.log("Stage 1 info:");
-        console.log("  Price per token:", ethers.formatUnits(stageInfo.pricePerToken, 6), "USDT");
-        console.log("  Tokens allocated:", ethers.formatUnits(stageInfo.tokensAllocated, 18), "MAGAX");
+    console.log("  Price per token:", ethers.formatUnits(stageInfo.pricePerToken, 6), "USDT");
+    console.log("  Tokens allocated:", ethers.formatUnits(stageInfo.tokensAllocated, 18), "MAGAX");
+    console.log("  USD target:", ethers.formatUnits(stageInfo.usdTarget, 6), "USDT");
+    console.log("  USD raised:", ethers.formatUnits(stageInfo.usdRaised, 6), "USDT");
         console.log("  Tokens sold:", ethers.formatUnits(stageInfo.tokensSold, 18), "MAGAX");
         console.log("  Is active:", stageInfo.isActive);
         
@@ -76,9 +80,9 @@ async function main() {
         }
         
         // Configure stage 1 if not already configured with correct values
-        if (stageInfo.pricePerToken !== pricePerToken || stageInfo.tokensAllocated !== tokensAllocated) {
+        if (stageInfo.pricePerToken !== pricePerToken || stageInfo.tokensAllocated !== tokensAllocated || stageInfo.usdTarget !== usdTarget) {
             console.log("\nConfiguring Stage 1...");
-            const configureTx = await presale.configureStage(1, pricePerToken, tokensAllocated);
+            const configureTx = await presale.configureStage(1, pricePerToken, tokensAllocated, usdTarget);
             console.log("Configure transaction hash:", configureTx.hash);
             await configureTx.wait();
             console.log("✅ Stage 1 configured successfully");
@@ -101,8 +105,10 @@ async function main() {
         console.log("\n🎉 Final verification:");
         console.log("Current stage:", newCurrentStage.toString());
         console.log("Stage 1 active:", updatedStageInfo.isActive);
-        console.log("Price per token:", ethers.formatUnits(updatedStageInfo.pricePerToken, 6), "USDT");
-        console.log("Tokens allocated:", ethers.formatUnits(updatedStageInfo.tokensAllocated, 18), "MAGAX");
+    console.log("Price per token:", ethers.formatUnits(updatedStageInfo.pricePerToken, 6), "USDT");
+    console.log("Tokens allocated:", ethers.formatUnits(updatedStageInfo.tokensAllocated, 18), "MAGAX");
+    console.log("USD target:", ethers.formatUnits(updatedStageInfo.usdTarget, 6), "USDT");
+    console.log("USD raised:", ethers.formatUnits(updatedStageInfo.usdRaised, 6), "USDT");
         
         console.log("\n✅ Stage 1 is now ready for purchases!");
         
