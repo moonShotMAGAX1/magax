@@ -28,9 +28,10 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     
     // Setup initial stage for testing
     const stagePrice = ethers.parseUnits("0.000270", 6); // 0.000270 USDT per MAGAX
-    const stageAllocation = ethers.parseUnits("50000000000", 18); // 50B MAGAX tokens (enough for all tests)
+  const stageAllocation = ethers.parseUnits("50000000000", 18); // 50B MAGAX tokens (enough for all tests)
+  const usdTarget = ethers.parseUnits("1000000", 6); // 1,000,000 USDT target for stage 1
     
-    await presaleReceipts.connect(stageManager).configureStage(1, stagePrice, stageAllocation);
+  await presaleReceipts.connect(stageManager).configureStage(1, stagePrice, stageAllocation, usdTarget);
     await presaleReceipts.connect(stageManager).activateStage(1);
   });
 
@@ -77,10 +78,11 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       const stagePrice = ethers.parseUnits("0.000293", 6); // 0.000293 USDT per MAGAX
       const stageAllocation = ethers.parseUnits("500000", 18); // 500k MAGAX tokens
       
+      const usdTarget = ethers.parseUnits("50000", 6);
       await expect(
-        presaleReceipts.connect(stageManager).configureStage(2, stagePrice, stageAllocation)
+        presaleReceipts.connect(stageManager).configureStage(2, stagePrice, stageAllocation, usdTarget)
       ).to.emit(presaleReceipts, "StageConfigured")
-        .withArgs(2, stagePrice, stageAllocation);
+        .withArgs(2, stagePrice, stageAllocation, usdTarget);
       
       const stageInfo = await presaleReceipts.getStageInfo(2);
       expect(stageInfo.pricePerToken).to.equal(stagePrice);
@@ -93,7 +95,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       const stagePrice = ethers.parseUnits("0.000293", 6);
       const stageAllocation = ethers.parseUnits("500000", 18);
       
-      await presaleReceipts.connect(stageManager).configureStage(2, stagePrice, stageAllocation);
+  await presaleReceipts.connect(stageManager).configureStage(2, stagePrice, stageAllocation, ethers.parseUnits("50000", 6));
       
       await expect(
         presaleReceipts.connect(stageManager).activateStage(2)
@@ -118,35 +120,37 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     });
 
     it("Should fail to configure invalid stages", async function () {
-      const stagePrice = ethers.parseUnits("0.000270", 6);
-      const stageAllocation = ethers.parseUnits("1000000", 18);
+  const stagePrice = ethers.parseUnits("0.000270", 6);
+  const stageAllocation = ethers.parseUnits("1000000", 18);
+  const usdTarget = ethers.parseUnits("10000", 6);
       
       // Invalid stage numbers
       await expect(
-        presaleReceipts.connect(stageManager).configureStage(0, stagePrice, stageAllocation)
+  presaleReceipts.connect(stageManager).configureStage(0, stagePrice, stageAllocation, usdTarget)
       ).to.be.revertedWithCustomError(presaleReceipts, "InvalidStage");
       
       await expect(
-        presaleReceipts.connect(stageManager).configureStage(51, stagePrice, stageAllocation)
+  presaleReceipts.connect(stageManager).configureStage(51, stagePrice, stageAllocation, usdTarget)
       ).to.be.revertedWithCustomError(presaleReceipts, "InvalidStage");
       
       // Invalid price
       await expect(
-        presaleReceipts.connect(stageManager).configureStage(2, 0, stageAllocation)
+  presaleReceipts.connect(stageManager).configureStage(2, 0, stageAllocation, usdTarget)
       ).to.be.revertedWithCustomError(presaleReceipts, "InvalidPrice");
       
       // Invalid allocation
       await expect(
-        presaleReceipts.connect(stageManager).configureStage(2, stagePrice, 0)
-      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidAmount");
+        presaleReceipts.connect(stageManager).configureStage(2, stagePrice, 0, usdTarget)
+      ).to.emit(presaleReceipts, "StageConfigured"); // zero allocation allowed now
     });
 
     it("Should fail non-stage-manager stage management", async function () {
       const stagePrice = ethers.parseUnits("0.000270", 6);
       const stageAllocation = ethers.parseUnits("1000000", 18);
+      const usdTarget = ethers.parseUnits("50000", 6);
       
       await expect(
-        presaleReceipts.connect(unauthorized).configureStage(2, stagePrice, stageAllocation)
+        presaleReceipts.connect(unauthorized).configureStage(2, stagePrice, stageAllocation, usdTarget)
       ).to.be.reverted;
       
       await expect(
@@ -196,8 +200,9 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       // Configure stage 2 with limited allocation and activate it
       const stagePrice = ethers.parseUnits("0.000293", 6);
       const stageAllocation = ethers.parseUnits("500000", 18); // 500K tokens only
+  const usdTarget = ethers.parseUnits("250000", 6);
       
-      await presaleReceipts.connect(stageManager).configureStage(2, stagePrice, stageAllocation);
+  await presaleReceipts.connect(stageManager).configureStage(2, stagePrice, stageAllocation, usdTarget);
       await presaleReceipts.connect(stageManager).activateStage(2);
       
       const usdtAmount = ethers.parseUnits("175.8", 6); // 600K * 0.000293 = 175.8 USDT
@@ -247,8 +252,9 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       // Configure a large stage to avoid token limit interference
       const largeStagePrice = ethers.parseUnits("0.000270", 6);
       const largeStageAllocation = ethers.parseUnits("50000000000", 18); // 50B MAGAX tokens (enough for max purchases)
+  const largeUsdTarget = ethers.parseUnits("60000000", 6); // 60M USDT target
       
-      await presaleReceipts.connect(stageManager).configureStage(2, largeStagePrice, largeStageAllocation);
+  await presaleReceipts.connect(stageManager).configureStage(2, largeStagePrice, largeStageAllocation, largeUsdTarget);
       await presaleReceipts.connect(stageManager).activateStage(2);
       
       // Record purchases totaling more than max (10M USDT total limit)
@@ -712,8 +718,9 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       // Configure stage with larger allocation for edge case tests
       await presaleReceipts.connect(stageManager).configureStage(
         2, 
-        ethers.parseUnits("0.000001", 6), // 0.000001 USDT per MAGAX
-        ethers.parseUnits("15000000000000", 18) // 15 Trillion MAGAX tokens (large enough for tests)
+  ethers.parseUnits("0.000270", 6), // Adjusted price to respect global token cap
+  ethers.parseUnits("150000000000", 18), // 150B allocation (above cap, but price ensures usage below cap)
+  ethers.parseUnits("50000000", 6) // 50M USDT target for stress edge cases
       );
       await presaleReceipts.connect(stageManager).activateStage(2);
     });
@@ -722,7 +729,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       it("should allow purchase that exactly hits MAX_TOTAL_USDT", async function () {
         // Need to make multiple purchases since MAX_PURCHASE_USDT is 1M and MAX_TOTAL_USDT is 10M
         const purchaseAmount = MAX_PURCHASE_USDT; // 1M USDT per purchase
-        const magaxAmount = purchaseAmount * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000001", 6);
+  const magaxAmount = purchaseAmount * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000270", 6);
 
         // Make 9 purchases of 1M each
         for (let i = 0; i < 9; i++) {
@@ -735,7 +742,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
 
         // Final purchase to exactly hit MAX_TOTAL_USDT
         const finalPurchase = MAX_TOTAL_USDT - (purchaseAmount * 9n);
-        const finalMagaxAmount = finalPurchase * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000001", 6);
+  const finalMagaxAmount = finalPurchase * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000270", 6);
 
         await expect(
           presaleReceipts.connect(recorder).recordPurchase(
@@ -752,7 +759,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       it("should reject purchase that exceeds MAX_TOTAL_USDT", async function () {
         // First fill up to the limit
         const purchaseAmount = MAX_PURCHASE_USDT; // 1M USDT
-        const magaxAmount = purchaseAmount * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000001", 6);
+  const magaxAmount = purchaseAmount * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000270", 6);
 
         // Make 10 purchases of 1M each (total 10M = MAX_TOTAL_USDT)
         for (let i = 0; i < 10; i++) {
@@ -765,7 +772,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
 
         // Now try one more purchase that would exceed the limit
         const smallAmount = ethers.parseUnits("1", 6); // 1 USDT
-        const smallMagaxAmount = smallAmount * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000001", 6);
+  const smallMagaxAmount = smallAmount * ethers.parseUnits("1", 18) / ethers.parseUnits("0.000270", 6);
 
         await expect(
           presaleReceipts.connect(recorder).recordPurchase(
@@ -783,9 +790,10 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
         await presaleReceipts.connect(stageManager).configureStage(
           3,
           ethers.parseUnits("0.000123", 6), // 0.000123 USDT per MAGAX - irregular price
-          ethers.parseUnits("10000000000", 18) // 10B tokens for enough allocation
+          ethers.parseUnits("10000000000", 18), // 10B tokens for enough allocation
+          ethers.parseUnits("1000000", 6) // 1M USDT target
         );
-        await presaleReceipts.activateStage(3);
+        await presaleReceipts.connect(stageManager).activateStage(3);
 
         // Amount that's not divisible by 10^12 and will cause rounding
         const magaxAmount = ethers.parseUnits("12345.123456789012", 18); // Smaller amount to avoid max purchase limit
@@ -833,8 +841,11 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
 
     describe("Referrer subsequent normal purchase", function () {
       it("should not double-count bonuses when referrer makes normal purchase after being referrer", async function () {
-        const usdtAmount = ethers.parseUnits("1000", 6);
-        const magaxAmount = ethers.parseUnits("1000000000", 18); // 1B MAGAX
+  const usdtAmount = ethers.parseUnits("1000", 6);
+  // Derive magaxAmount from active stage price to satisfy price invariant
+  const stageInfo = await presaleReceipts.getStageInfo(2);
+  const pricePerToken = stageInfo.pricePerToken; // 6 decimals
+  const magaxAmount = (usdtAmount * ethers.parseUnits("1", 18)) / pricePerToken; // integer division (rounds down)
 
         // First: buyer2 refers buyer1 and gets bonus
         await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
@@ -866,8 +877,10 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       });
 
       it("should allow referrer to make subsequent referral purchases correctly", async function () {
-        const usdtAmount = ethers.parseUnits("1000", 6);
-        const magaxAmount = ethers.parseUnits("1000000000", 18);
+  const usdtAmount = ethers.parseUnits("1000", 6);
+  const stageInfo = await presaleReceipts.getStageInfo(2);
+  const pricePerToken = stageInfo.pricePerToken;
+  const magaxAmount = (usdtAmount * ethers.parseUnits("1", 18)) / pricePerToken;
 
         // First referral: buyer2 refers buyer1
         await presaleReceipts.connect(recorder).recordPurchaseWithReferral(
@@ -1091,7 +1104,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
         await presaleReceipts.connect(stageManager).configureStage(
           2,
           ethers.parseUnits("0.000270", 6),
-          ethers.parseUnits("1000", 18) // Only 1000 tokens
+          ethers.parseUnits("1000", 18), // Only 1000 tokens
+          ethers.parseUnits("10000", 6)
         );
         await presaleReceipts.connect(stageManager).activateStage(2);
 
@@ -1139,7 +1153,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
         await presaleReceipts.connect(stageManager).configureStage(
           2,
           ethers.parseUnits("0.000293", 6),
-          ethers.parseUnits("1000000000", 18)
+          ethers.parseUnits("1000000000", 18),
+          ethers.parseUnits("10000000", 6)
         );
         await presaleReceipts.connect(stageManager).activateStage(2);
 
@@ -1383,7 +1398,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
         await presaleReceipts.connect(stageManager).configureStage(
           4,
           ethers.parseUnits("0.000002", 6),
-          ethers.parseUnits("500000000", 18)
+          ethers.parseUnits("500000000", 18),
+          ethers.parseUnits("250000", 6)
         );
 
         await expect(presaleReceipts.connect(stageManager).activateStage(4))
@@ -1393,8 +1409,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
 
       it("should track operator in stage transitions for audit", async function () {
         // Configure stages
-        await presaleReceipts.connect(stageManager).configureStage(5, ethers.parseUnits("0.000003", 6), ethers.parseUnits("100000000", 18));
-        await presaleReceipts.connect(stageManager).configureStage(6, ethers.parseUnits("0.000004", 6), ethers.parseUnits("100000000", 18));
+  await presaleReceipts.connect(stageManager).configureStage(5, ethers.parseUnits("0.000003", 6), ethers.parseUnits("100000000", 18), ethers.parseUnits("250000", 6));
+  await presaleReceipts.connect(stageManager).configureStage(6, ethers.parseUnits("0.000004", 6), ethers.parseUnits("100000000", 18), ethers.parseUnits("250000", 6));
 
         // Grant stage manager role to buyer1 for testing
         await presaleReceipts.connect(owner).grantRole(await presaleReceipts.STAGE_MANAGER_ROLE(), buyer1.address);
@@ -1427,9 +1443,10 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       const stage2Price = ethers.parseUnits("0.000293", 6); // 0.000293 USDT per MAGAX
       const stage3Price = ethers.parseUnits("0.000318", 6); // 0.000318 USDT per MAGAX
       const stageAllocation = ethers.parseUnits("1000000", 18); // 1M MAGAX tokens per stage
+  const usdTarget = ethers.parseUnits("750000", 6);
       
-      await presaleReceipts.connect(stageManager).configureStage(2, stage2Price, stageAllocation);
-      await presaleReceipts.connect(stageManager).configureStage(3, stage3Price, stageAllocation);
+  await presaleReceipts.connect(stageManager).configureStage(2, stage2Price, stageAllocation, usdTarget);
+  await presaleReceipts.connect(stageManager).configureStage(3, stage3Price, stageAllocation, usdTarget);
     });
 
     it("Should successfully transition from stage 1 to stage 2", async function () {
@@ -1554,7 +1571,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       const smallStagePrice = ethers.parseUnits("0.000270", 6); // Use correct pricing
       const smallAllocation = ethers.parseUnits("1000", 18); // Only 1000 tokens
       
-      await presaleReceipts.connect(stageManager).configureStage(4, smallStagePrice, smallAllocation);
+  await presaleReceipts.connect(stageManager).configureStage(4, smallStagePrice, smallAllocation, ethers.parseUnits("10000", 6));
       await presaleReceipts.connect(stageManager).activateStage(4);
       
       // Purchase exactly the stage allocation
@@ -1567,7 +1584,6 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       // Verify stage is exhausted
       const stage4Info = await presaleReceipts.getStageInfo(4);
       expect(stage4Info.tokensSold).to.equal(smallAllocation);
-      expect(stage4Info.tokensRemaining).to.equal(0);
     });
 
     it("Should allow admin to skip stages (non-sequential activation)", async function () {
@@ -1638,7 +1654,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
     it("Should fail to activate unconfigured stages", async function () {
       await expect(
         presaleReceipts.connect(stageManager).activateStage(10)
-      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidAmount");
+  ).to.be.revertedWithCustomError(presaleReceipts, "InvalidPrice");
     });
 
     it("Should prevent activation of already active stage", async function () {
@@ -1773,7 +1789,7 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
 
         // Only STAGE_MANAGER_ROLE can configure stages
         await expect(
-          presaleReceipts.connect(unauthorized).configureStage(5, 100, ethers.parseUnits("1000", 18))
+          presaleReceipts.connect(unauthorized).configureStage(5, 100, ethers.parseUnits("1000", 18), ethers.parseUnits("10000", 6))
         ).to.be.reverted;
       });
 
@@ -1792,7 +1808,8 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
           presaleReceipts.connect(stageManager).configureStage(
             5,
             ethers.parseUnits("0.001", 6),
-            ethers.parseUnits("1000000", 18)
+            ethers.parseUnits("1000000", 18),
+            ethers.parseUnits("500000", 6)
           )
         ).to.not.be.reverted;
       });

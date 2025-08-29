@@ -12,8 +12,9 @@ describe("MAGAXPresaleReceipts - Promo and Referral Combined", function () {
 
         // Configure stage 1
         const price = ethers.parseUnits("0.000270", 6); // 0.000270 USDT per token
-        const allocation = ethers.parseUnits("200000000", 18); // 200M tokens
-        await presale.connect(stageManager).configureStage(1, price, allocation);
+    const allocation = ethers.parseUnits("200000000", 18); // 200M tokens
+    const usdTarget = ethers.parseUnits("1000000", 6); // 1M USDT target
+    await presale.connect(stageManager).configureStage(1, price, allocation, usdTarget);
         await presale.connect(stageManager).activateStage(1);
     });
 

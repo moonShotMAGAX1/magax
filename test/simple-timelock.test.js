@@ -21,9 +21,10 @@ describe("Simple Timelock Test", function () {
     it("Should allow stage configuration without timelock", async function () {
         await expect(
             presale.connect(owner).configureStage(
-                1, 
-                ethers.parseUnits("0.1", 6),    // price per token
-                ethers.parseUnits("1000000", 18) // tokens allocated
+                1,
+                ethers.parseUnits("0.1", 6),     // price per token
+                ethers.parseUnits("1000000", 18), // tokens allocated
+                ethers.parseUnits("500000", 6)    // usd target
             )
         ).to.not.be.reverted;
     });
