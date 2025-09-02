@@ -60,92 +60,51 @@ async function deployTimelock() {
     };
 }
 
-async function deployPresaleWithTimelock() {
-    console.log("Deploying MAGAX Presale with Timelock integration...");
-    
-    // Deploy timelock first
-    const { timelock, address: timelockAddress } = await deployTimelock();
-    
-    console.log("\nDeploying presale contract...");
-    
-    const recorder = process.env.RECORDER_ADDRESS;
-    const stageManager = process.env.STAGE_MANAGER_ADDRESS;
-    
-    if (!recorder) {
-        throw new Error("RECORDER_ADDRESS must be set in environment");
-    }
-    if (!stageManager) {
-        throw new Error("STAGE_MANAGER_ADDRESS must be set in environment");
-    }
-    
-    // Deploy presale with timelock as admin
-    const MAGAXPresale = await ethers.getContractFactory("MAGAXPresaleReceipts");
-    const presale = await MAGAXPresale.deploy(recorder, stageManager, timelockAddress);
-    await presale.waitForDeployment();
-    
-    const presaleAddress = await presale.getAddress();
-    console.log("✅ Presale deployed to:", presaleAddress);
-    
-    // Verify admin role assignment
-    const DEFAULT_ADMIN_ROLE = await presale.DEFAULT_ADMIN_ROLE();
-    const isTimelockAdmin = await presale.hasRole(DEFAULT_ADMIN_ROLE, timelockAddress);
-    
-    console.log("✅ Timelock has admin role:", isTimelockAdmin);
-    
-    // Remove references to timelock-specific properties that no longer exist
-    // const isTimelockActive = await presale.timelockActive();
-    // const contractTimelock = await presale.timelock();
-    
-    // Save deployment info
-    const deploymentInfo = {
-        network: hre.network.name,
-        timelock: {
-            address: timelockAddress,
-            delay: "172800", // 48 hours
-        },
-        presale: {
-            address: presaleAddress,
-            timelockIsAdmin: isTimelockAdmin,
-        },
-        timestamp: new Date().toISOString(),
-        deployer: (await ethers.getSigners())[0].address
-    };
-    
-    const fs = require('fs');
-    const deploymentPath = `./deployments/timelock-${hre.network.name}-${Date.now()}.json`;
-    fs.writeFileSync(deploymentPath, JSON.stringify(deploymentInfo, null, 2));
-    
-    console.log("✅ Deployment info saved to:", deploymentPath);
-    
-    return deploymentInfo;
-}
+// Legacy combo deployment removed — this script now deploys ONLY the timelock.
 
 async function main() {
     try {
-        const deployment = await deployPresaleWithTimelock();
-        
-        console.log("\n🎉 Deployment Summary:");
+        const { address: timelockAddress, delay } = await deployTimelock();
+        const net = await ethers.provider.getNetwork();
+        const [deployer] = await ethers.getSigners();
+        const fs = require('fs');
+        const outDir = './deployments';
+        if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+        const artifact = {
+            network: net.name,
+            chainId: Number(net.chainId),
+            timelock: timelockAddress,
+            delaySeconds: delay,
+            deployer: deployer.address,
+            proposers: [
+                process.env.MULTISIG_PROPOSER_1_ADDRESS,
+                process.env.MULTISIG_PROPOSER_2_ADDRESS,
+                process.env.GNOSIS_SAFE_ADDRESS,
+                process.env.SIMPLE_MULTISIG_ADDRESS
+            ].filter(a => a),
+            timestamp: new Date().toISOString()
+        };
+        const file = `${outDir}/timelock-${net.name}-${Date.now()}.json`;
+        fs.writeFileSync(file, JSON.stringify(artifact, null, 2));
+        console.log("✅ Timelock artifact saved:", file);
+
+        console.log("\n🎉 Timelock Deployment Summary");
         console.log("=".repeat(50));
-        console.log("Network:", deployment.network);
-        console.log("Timelock Address:", deployment.timelock.address);
-        console.log("Timelock Delay:", deployment.timelock.delay, "seconds (48 hours)");
-        console.log("Presale Address:", deployment.presale.address);
-        console.log("Timelock Active:", deployment.presale.timelockActive);
-        console.log("Deployer:", deployment.deployer);
+        console.log("Network         :", net.name, `(chain ${net.chainId})`);
+        console.log("Timelock Address:", timelockAddress);
+        console.log("Delay (seconds) :", delay);
+        console.log("Deployer        :", deployer.address);
+        console.log("Proposers/Execs :", artifact.proposers.join(', '));
         console.log("=".repeat(50));
-        
-        console.log("\n📋 Next Steps:");
-        console.log("1. Verify contracts on block explorer");
-        console.log("2. Test timelock operations on testnet");
-        console.log("3. Ensure multi-sig contracts are properly configured as proposers/executors");
-        console.log("4. Test multi-sig → timelock → presale operation flow");
-        console.log("5. Update frontend to use timelock for critical operations");
-        
+
+        console.log("\nNext Steps:");
+        console.log("1. Export TIMelock address to .env as TIMELOCK_ADDRESS & ADMIN_ADDRESS");
+        console.log("2. Deploy presale separately with this ADMIN_ADDRESS");
+        console.log("3. Use multisig → timelock to schedule configureStage / activateStage / role grants");
+        console.log("4. Verify contracts on explorer after indexing");
     } catch (error) {
-        console.error("❌ Deployment failed:", error.message);
-        if (error.data) {
-            console.error("Error data:", error.data);
-        }
+        console.error("❌ Timelock deployment failed:", error.message);
+        if (error.data) console.error("Error data:", error.data);
         process.exit(1);
     }
 }
@@ -160,8 +119,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = {
-    deployTimelock,
-    deployPresaleWithTimelock,
-    main
-};
+module.exports = { deployTimelock, main };
