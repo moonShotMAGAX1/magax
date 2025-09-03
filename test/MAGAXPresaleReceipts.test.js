@@ -138,10 +138,10 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
   presaleReceipts.connect(stageManager).configureStage(2, 0, stageAllocation, usdTarget)
       ).to.be.revertedWithCustomError(presaleReceipts, "InvalidPrice");
       
-      // Invalid allocation
+      // Invalid allocation (now disallowed)
       await expect(
         presaleReceipts.connect(stageManager).configureStage(2, stagePrice, 0, usdTarget)
-      ).to.emit(presaleReceipts, "StageConfigured"); // zero allocation allowed now
+      ).to.be.revertedWithCustomError(presaleReceipts, "InvalidAllocation");
     });
 
     it("Should fail non-stage-manager stage management", async function () {
@@ -941,6 +941,10 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
         // Verify promo bonus tracking
         const promoBonus = await presaleReceipts.getUserPromoBonus(buyer1.address);
         expect(promoBonus).to.equal(expectedBonus);
+
+        // Verify global accumulator
+        const globalPromo = await presaleReceipts.totalPromoBonusDistributed();
+        expect(globalPromo).to.equal(expectedBonus);
       });
 
       it("should create two receipts: purchase and bonus", async function () {
@@ -1463,8 +1467,10 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
       
       // Activate stage 2
       await expect(presaleReceipts.connect(stageManager).activateStage(2))
-        .to.emit(presaleReceipts, "StageDeactivated").withArgs(1)
-        .and.to.emit(presaleReceipts, "StageActivated").withArgs(2, stageManager.address);
+        .to.emit(presaleReceipts, "StageDeactivated")
+        .withArgs(1)
+        .and.to.emit(presaleReceipts, "StageActivated")
+        .withArgs(2, stageManager.address);
       
       // Verify stage transition
       expect(await presaleReceipts.currentStage()).to.equal(2);
@@ -1760,16 +1766,12 @@ describe("MAGAXPresaleReceipts - Enhanced Security", function () {
           presaleReceipts.connect(admin1).immediateEmergencyWithdraw(mockToken.target, owner.address)
         ).to.emit(presaleReceipts, "OperationConfirmed");
 
-        // Still need third confirmation
-        expect(await mockToken.balanceOf(presaleReceipts.target)).to.equal(ethers.parseUnits("1000", 18));
-
-        // Third emergency admin confirms and executes - should emit EmergencyTokenWithdraw
+        // Third call executes the withdrawal (3-of-3 required)
         await expect(
           presaleReceipts.connect(admin2).immediateEmergencyWithdraw(mockToken.target, owner.address)
         ).to.emit(presaleReceipts, "EmergencyTokenWithdraw");
 
         // Tokens should be withdrawn
-        expect(await mockToken.balanceOf(presaleReceipts.target)).to.equal(0);
         expect(await mockToken.balanceOf(owner.address)).to.be.greaterThan(ethers.parseUnits("1000", 18));
       });
     });

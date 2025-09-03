@@ -29,6 +29,7 @@ error InvalidUsdTarget();
 error PresaleTokenCapExceeded();
 error StageUsdOverTarget();
 error StageAlreadyUsed();
+error InvalidAllocation();
 
 contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -106,6 +107,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     uint128 public totalUSDT;
     uint128 public totalMAGAX;
     uint32 public totalBuyers;   // Track unique buyers
+    // Global cumulative promo bonuses distributed (sum of all promoBonus values)
+    uint128 public totalPromoBonusDistributed;
 
     // Global presale hard token cap (example: 100B * 1e18 = 10% of 1T)
     uint256 public constant PRESALE_TOKEN_CAP = 100_000_000_000 * 1e18;
@@ -535,6 +538,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
         if (pricePerToken == 0) revert InvalidPrice();
         if (usdTarget == 0) revert InvalidUsdTarget();
+        if (tokensAllocated == 0) revert InvalidAllocation();
         if (stages[stage].usdRaised > 0 || stages[stage].tokensSold > 0) revert StageAlreadyUsed();
         stages[stage] = StageInfo({
             pricePerToken: pricePerToken,
@@ -559,6 +563,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
         if (stages[stage].pricePerToken == 0) revert InvalidPrice();
         if (stages[stage].usdTarget == 0) revert InvalidUsdTarget();
+        if (stages[stage].tokensAllocated == 0) revert InvalidAllocation();
         
         // Check if stage is already active
         if (stages[stage].isActive) revert StageAlreadyActive();
@@ -818,6 +823,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         userTotalUSDT[buyer] += usdtAmount;
         userTotalMAGAX[buyer] += totalTokens; // Include bonus in user's total
         userPromoData[buyer].totalPromoBonus += promoBonus;
+        totalPromoBonusDistributed += promoBonus; // track global promo distribution
         
         totalUSDT += usdtAmount;
         totalMAGAX += totalTokens;
@@ -890,6 +896,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         userTotalMAGAX[buyer] += totalBuyerTokens;
         userTotalMAGAX[referrer] += referrerBonus;
         userPromoData[buyer].totalPromoBonus += promoBonus;
+        totalPromoBonusDistributed += promoBonus; // track global promo distribution
 
         unchecked { referralData[referrer].totalReferrals++; }
         referralData[referrer].totalBonusEarned += referrerBonus;

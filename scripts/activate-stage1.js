@@ -41,18 +41,18 @@ async function main() {
     const stage1Config = {
         stage: 1,
         price: "0.000270", // USDT per MAGAX token
-        tokens: "0", // Total tokens for stage 1
-        usdTarget: "54000"
+        tokens: "200000000", // Non-zero allocation required
+        usdTarget: "54000" // Expected derived target
     };
     
     console.log("\nStage 1 Configuration:");
     console.log("  Stage:", stage1Config.stage);
     console.log("  Price per token:", stage1Config.price, "USDT");
-    console.log("  Token allocation (0 means unlimited):", stage1Config.tokens, "MAGAX");
+    console.log("  Token allocation:", stage1Config.tokens, "MAGAX");
     
     // Convert to contract format
     const pricePerToken = ethers.parseUnits(stage1Config.price, 6); // 6 decimals for USDT
-    const tokensAllocated = 0n; // unlimited allocation
+    const tokensAllocated = ethers.parseUnits(stage1Config.tokens, 18);
     
     console.log("\nContract values:");
     console.log("  Price per token (wei):", pricePerToken.toString());
@@ -76,8 +76,8 @@ async function main() {
             return;
         }
         
-    // Configure stage 1 if not already configured with correct values (fixed usdTarget=54,000 USDT)
-    const usdTarget = BigInt(54000) * BigInt(1e6);
+    // Compute usdTarget from allocation (should be ~54,000)
+    const usdTarget = (tokensAllocated * pricePerToken) / BigInt(1e18);
     if (stageInfo.pricePerToken !== pricePerToken || stageInfo.tokensAllocated !== tokensAllocated || stageInfo.usdTarget !== usdTarget) {
             console.log("\nConfiguring Stage 1...");
             const configureTx = await presale.configureStage(1, pricePerToken, tokensAllocated, usdTarget);

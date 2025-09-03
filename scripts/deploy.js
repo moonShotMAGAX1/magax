@@ -207,10 +207,10 @@ async function configureStage1 (presale) {
   console.log("\nConfiguring Stage 1 …");
   const stage1 = STAGES.find(cfg => cfg.stage === 1);
   const price = ethers.parseUnits(stage1.price, 6);
-  const alloc = 0n; // Unlimited allocation
-  const usdTarget = BigInt(54000) * BigInt(1e6); // 54,000 USDT (6 decimals)
+  const alloc = ethers.parseUnits(stage1.tokens, 18); // Non-zero allocation required
+  const usdTarget = (alloc * price) / BigInt(1e18); // Derived USD target (~54,000 USDT)
   await presale.configureStage(1, price, alloc, usdTarget);
-  console.log(`Stage 1 configured @ $${stage1.price} with unlimited tokens (alloc=0) and usdTarget=54,000 USDT\n`);
+  console.log(`Stage 1 configured @ $${stage1.price} with ${stage1.tokens} tokens (usdTarget=${ethers.formatUnits(usdTarget,6)} USDT)\n`);
 }
 
 async function hasDeployerAdmin(presale, deployerAddr) {
