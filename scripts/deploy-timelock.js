@@ -22,24 +22,33 @@ async function deployTimelock() {
     
     // Multi-sig contract addresses that can propose/execute
     // Use actual multi-sig contract addresses (e.g., Gnosis Safe, SimpleMultiSig)
-    const proposers = [
-        process.env.MULTISIG_PROPOSER_1_ADDRESS,  // Primary multi-sig contract
-        process.env.MULTISIG_PROPOSER_2_ADDRESS,  // Secondary multi-sig contract
-        process.env.GNOSIS_SAFE_ADDRESS,         // Gnosis Safe contract
-        process.env.SIMPLE_MULTISIG_ADDRESS      // SimpleMultiSig contract
-    ].filter(addr => addr && addr !== ""); // Remove empty addresses
-    
-    // Validate that we have at least one multi-sig address
+    // Collect potential proposer addresses (any may be undefined)
+    const raw = [
+        process.env.GNOSIS_SAFE_ADDRESS,
+        process.env.MULTISIG_PROPOSER_1_ADDRESS,
+        process.env.MULTISIG_PROPOSER_2_ADDRESS,
+        process.env.SIMPLE_MULTISIG_ADDRESS
+    ];
+    // Filter valid addresses & dedupe
+    const seen = new Set();
+    const proposers = raw.filter(a => a && a !== "" && ethers.isAddress(a) && !seen.has(a.toLowerCase()) && (seen.add(a.toLowerCase()) || true));
+
     if (proposers.length === 0) {
-        console.warn("⚠️  No multi-sig addresses configured, using deployer as fallback");
+        console.warn("⚠️  No multisig addresses provided; using deployer as fallback (NOT recommended for production)");
         proposers.push(deployer.address);
     }
-    
-    const executors = proposers; // Same multi-sig contracts can execute
+
+    if (proposers.length === 1) {
+        console.log("ℹ Single multisig address detected. This is acceptable: the Safe enforces M-of-N internally.");
+    } else {
+        console.log(`ℹ Using ${proposers.length} proposer addresses.`);
+    }
+
+    const executors = proposers; // Mirror list for simplicity
     const admin = ethers.ZeroAddress; // No admin role for full decentralization
     
-    console.log("Multi-sig Proposers/Executors:", proposers);
-    console.log("Expected contract types: Gnosis Safe, SimpleMultiSig, or similar");
+    console.log("Proposers/Executors:", proposers);
+    console.log("(Ensure each is a multisig contract, not an EOA, for production)");
     
     // Deploy timelock
     const MAGAXTimelock = await ethers.getContractFactory("MAGAXTimelock");
