@@ -3,6 +3,36 @@ const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
 
+// Constants for bonus calculations
+const REF_BPS = 700;        // 7% referrer bonus
+const REFEREE_BPS = 500;    // 5% referee bonus  
+const MAX_PROMO_BPS = 2000; // 20% promo ceiling
+const SAFETY_BPS = 300;     // 3% rounding/slippage safety margin
+
+/**
+ * TokensAlloc18WithHeadroom calculates token allocation with headroom for bonuses and safety margins
+ * tokensAlloc18WithHeadroom = ceil( (usdTarget6d * 1e18 / price6d) * (10000 + bonusBps + safetyBps) / 10000 )
+ */
+function tokensAlloc18WithHeadroom(usdTarget6d, price6d, bonusBps = 0, safetyBps = SAFETY_BPS) {
+  if (price6d <= 0n) {
+    return 0n; // invalid price guard
+  }
+
+  // base = floor(usdTarget6d * 1e18 / price6d)
+  const num = usdTarget6d * BigInt(1e18);
+  const base = num / price6d;
+
+  // factorBps = 10000 + bonusBps + safetyBps
+  const factorBps = BigInt(10000 + bonusBps + safetyBps);
+
+  // ceil(base * factorBps / 10000)
+  const tmp = base * factorBps;
+  const den = 10000n;
+  const result = (tmp + den - 1n) / den; // +den-1 for ceil
+
+  return result > 0n ? result : 1n; // never zero per audit requirement
+}
+
 const STAGES = [
   { stage: 1,  price: "0.000270", tokens: "200000000"       },
   { stage: 2,  price: "0.000293", tokens: "210400000"       },
@@ -207,10 +237,14 @@ async function configureStage1 (presale) {
   console.log("\nConfiguring Stage 1 …");
   const stage1 = STAGES.find(cfg => cfg.stage === 1);
   const price = ethers.parseUnits(stage1.price, 6);
-  const alloc = ethers.parseUnits(stage1.tokens, 18); // Non-zero allocation required
-  const usdTarget = (alloc * price) / BigInt(1e18); // Derived USD target (~54,000 USDT)
+  const usdTarget = ethers.parseUnits("54000", 6); // 54,000 USDT target
+  
+  // Calculate allocation with headroom for referral + promo bonuses + safety margin
+  const maxBonusBps = REF_BPS + REFEREE_BPS + MAX_PROMO_BPS; // 7% + 5% + 20% = 32%
+  const alloc = tokensAlloc18WithHeadroom(usdTarget, price, maxBonusBps, SAFETY_BPS);
+  
   await presale.configureStage(1, price, alloc, usdTarget);
-  console.log(`Stage 1 configured @ $${stage1.price} with ${stage1.tokens} tokens (usdTarget=${ethers.formatUnits(usdTarget,6)} USDT)\n`);
+  console.log(`Stage 1 configured @ $${stage1.price} with ${ethers.formatUnits(alloc, 18)} tokens (usdTarget=54,000 USDT, headroom=${(maxBonusBps + SAFETY_BPS)/100}%)\n`);
 }
 
 async function hasDeployerAdmin(presale, deployerAddr) {
