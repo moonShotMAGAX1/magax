@@ -123,6 +123,20 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         bool isNewBuyer
     );
 
+    // Canonical purchase event for unified off-chain indexing
+    event PurchaseRecordedV2(
+        address indexed buyer,
+        uint8   stage,               
+        uint256 usd6d,               // USDT amount in 6 decimals
+        uint256 price6d,             // stage price in 6 decimals
+        uint256 baseTokens18,        // floor(usd6d * 1e18 / price6d)
+        uint256 promoBonus18,        // floor(baseTokens18 * promoBps / 10_000)
+        uint256 refereeBonus18,      // floor(baseTokens18 * 5 / 100)
+        uint256 referrerBonus18,     // floor(baseTokens18 * 7 / 100)
+        address referrer,            // zero address if none / invalid
+        bytes32 orderId              
+    );
+
     event ReferralBonusAwarded(
         address indexed referrer,
         address indexed referee,
@@ -207,7 +221,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     function recordPurchase(
         address buyer,
         uint128 usdtAmount,
-        uint128 magaxAmount
+        uint128 magaxAmount,
+        bytes32 orderId
     ) external whenNotPaused onlyRole(RECORDER_ROLE) nonReentrant {
         if (finalised) revert PresaleFinalised();
         
@@ -219,7 +234,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         _validatePrice(usdtAmount, magaxAmount, stageInfo.pricePerToken);
         
         uint40 timestamp = uint40(block.timestamp);
-        _processPurchase(buyer, usdtAmount, magaxAmount, stage, stageInfo, timestamp);
+        _processPurchase(buyer, usdtAmount, magaxAmount, stage, stageInfo, timestamp, orderId);
     }
 
     function _validatePurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount) internal view {
@@ -269,7 +284,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 magaxAmount,
         uint8 stage,
         StageInfo storage stageInfo,
-        uint40 timestamp
+        uint40 timestamp,
+        bytes32 orderId
     ) internal {
         // Auditor recommendation: standardize new buyer detection using receipt existence
         bool isNewBuyer = userReceipts[buyer].length == 0;
@@ -293,6 +309,20 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         }
 
         _emitPurchaseEvent(buyer, usdtAmount, magaxAmount, timestamp, stage, isNewBuyer);
+        // Emit canonical unified purchase event (simple purchase => no bonuses)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            0,
+            0,
+            0,
+            address(0),
+            orderId
+        );
         emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
 
         bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
@@ -336,7 +366,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address buyer,
         uint128 usdtAmount,
         uint128 magaxAmount,
-        address referrer
+        address referrer,
+        bytes32 orderId
     ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
         if (finalised) revert PresaleFinalised();
         
@@ -358,7 +389,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         }
         
         uint40 timestamp = uint40(block.timestamp);
-        _processReferralPurchase(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokens, stage, stageInfo, timestamp);
+        _processReferralPurchase(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokens, stage, stageInfo, timestamp, orderId);
     }
 
     function _validateReferralPurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount, address referrer) internal view {
@@ -388,7 +419,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 totalTokensRequired,
         uint8 stage,
         StageInfo storage stageInfo,
-        uint40 timestamp
+        uint40 timestamp,
+        bytes32 orderId
     ) internal {
         _setReferrerIfNeeded(buyer, referrer);
         
@@ -415,6 +447,20 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
             stageInfo.tokensSold += totalTokensRequired;
         }
         _emitReferralEvents(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, timestamp, stage, isNewBuyer);
+        // Emit canonical unified purchase event (referral only)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            0,
+            uint256(refereeBonus),
+            uint256(referrerBonus),
+            referrer,
+            orderId
+        );
         emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
         bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
         bool hitCap = (stageInfo.tokensAllocated > 0 && prevSold < stageInfo.tokensAllocated && stageInfo.tokensSold >= stageInfo.tokensAllocated);
@@ -703,7 +749,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address buyer,
         uint128 usdtAmount,
         uint128 magaxAmount,
-        uint16 promoBps
+        uint16 promoBps,
+        bytes32 orderId
     ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
         if (finalised) revert PresaleFinalised();
         
@@ -724,7 +771,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         }
         
         uint40 timestamp = uint40(block.timestamp);
-        _processPromoLaunch(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, totalTokens, stage, stageInfo, timestamp);
+        _processPromoLaunch(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, totalTokens, stage, stageInfo, timestamp, orderId);
     }
 
     /**
@@ -743,7 +790,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 usdtAmount,
         uint128 magaxAmount,
         uint16  promoBps,
-        address referrer
+        address referrer,
+        bytes32 orderId
     ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
         if (finalised) revert PresaleFinalised();
 
@@ -759,7 +807,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
 
         _processPromoAndReferralPurchase(
             buyer, usdtAmount, magaxAmount, promoBps, referrer,
-            uint40(block.timestamp), stage, stageInfo
+            uint40(block.timestamp), stage, stageInfo, orderId
         );
     }
 
@@ -781,7 +829,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 totalTokens,
         uint8 stage,
         StageInfo storage stageInfo,
-        uint40 timestamp
+        uint40 timestamp,
+        bytes32 orderId
     ) internal {
         // Auditor recommendation: use receipt count for new buyer detection
         bool isNewBuyer = userReceipts[buyer].length == 0;
@@ -807,6 +856,20 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
             stageInfo.tokensSold += totalTokens;
         }
         _emitPromoEvents(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, timestamp, stage, isNewBuyer, bonusReceiptIdx);
+        // Emit canonical unified purchase event (promo only)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            uint256(promoBonus),
+            0,
+            0,
+            address(0),
+            orderId
+        );
         emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
         bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
         bool hitCap = (stageInfo.tokensAllocated > 0 && prevSold < stageInfo.tokensAllocated && stageInfo.tokensSold >= stageInfo.tokensAllocated);
@@ -858,7 +921,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address referrer,
         uint40  timestamp,
         uint8   stage,
-        StageInfo storage stageInfo
+        StageInfo storage stageInfo,
+        bytes32 orderId
     ) internal {
         _setReferrerIfNeeded(buyer, referrer);
 
@@ -916,6 +980,20 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         emit PurchaseRecorded(buyer, usdtAmount, magaxAmount, timestamp, stage, userReceipts[buyer].length, isNewBuyer);
         emit PromoUsed(buyer, promoBps, promoBonus, stage, userReceipts[buyer].length - 2);
         emit ReferralBonusAwarded(referrer, buyer, referrerBonus, refereeBonus, stage);
+        // Emit canonical unified purchase event (promo + referral)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            uint256(promoBonus),
+            uint256(refereeBonus),
+            uint256(referrerBonus),
+            referrer,
+            orderId
+        );
         emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
         bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
         bool hitCap = (stageInfo.tokensAllocated > 0 && prevSold < stageInfo.tokensAllocated && stageInfo.tokensSold >= stageInfo.tokensAllocated);
