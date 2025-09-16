@@ -3,6 +3,36 @@ const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
 
+// Constants for bonus calculations
+const REF_BPS = 700;        // 7% referrer bonus
+const REFEREE_BPS = 500;    // 5% referee bonus  
+const MAX_PROMO_BPS = 2000; // 20% promo ceiling
+const SAFETY_BPS = 300;     // 3% rounding/slippage safety margin
+
+/**
+ * TokensAlloc18WithHeadroom calculates token allocation with headroom for bonuses and safety margins
+ * tokensAlloc18WithHeadroom = ceil( (usdTarget6d * 1e18 / price6d) * (10000 + bonusBps + safetyBps) / 10000 )
+ */
+function tokensAlloc18WithHeadroom(usdTarget6d, price6d, bonusBps = 0, safetyBps = SAFETY_BPS) {
+  if (price6d <= 0n) {
+    return 0n; // invalid price guard
+  }
+
+  // base = floor(usdTarget6d * 1e18 / price6d)
+  const num = usdTarget6d * BigInt(1e18);
+  const base = num / price6d;
+
+  // factorBps = 10000 + bonusBps + safetyBps
+  const factorBps = BigInt(10000 + bonusBps + safetyBps);
+
+  // ceil(base * factorBps / 10000)
+  const tmp = base * factorBps;
+  const den = 10000n;
+  const result = (tmp + den - 1n) / den; // +den-1 for ceil
+
+  return result > 0n ? result : 1n; // never zero per audit requirement
+}
+
 const STAGES = [
   { stage: 1,  price: "0.000270", tokens: "200000000"       },
   { stage: 2,  price: "0.000293", tokens: "210400000"       },
@@ -63,7 +93,8 @@ async function main () {
   const pretty       = n => n.toLocaleString();
   const isEth        = [1, 11155111].includes(chainId);        // mainnet / sepolia
   const isPolygon    = [137, 80001, 80002].includes(chainId);  // main / mumbai / amoy
-  if (!isEth && !isPolygon) throw new Error(`Unsupported chain ${chainId}`);
+  const isLocal      = chainId === 31337;
+  if (!isEth && !isPolygon && !isLocal) throw new Error(`Unsupported chain ${chainId}`);
 
 
   const bal      = await ethers.provider.getBalance(deployer);
@@ -73,11 +104,11 @@ async function main () {
   }
 
   const env = process.env;
-  const currency  = isEth ? "ETH" : "MATIC";
-  const treasury  = env.TREASURY_ADDRESS;
-  const recorder  = env.RECORDER_ADDRESS;
-  const stageManager = env.STAGE_MANAGER_ADDRESS;
-  const admin     = env.ADMIN_ADDRESS; // Must be timelock address
+  const currency  = isEth ? "ETH" : (isPolygon ? "MATIC" : "TEST");
+  const treasury      = env.TREASURY_ADDRESS || (isLocal ? deployer.address : undefined);
+  const recorder      = env.RECORDER_ADDRESS || (isLocal ? deployer.address : undefined);
+  const stageManager  = env.STAGE_MANAGER_ADDRESS || (isLocal ? deployer.address : undefined);
+  const admin         = env.ADMIN_ADDRESS || (isLocal ? deployer.address : undefined); // timelock on real network
   
   // Optional role addresses - will be granted by timelock after deployment
   const emergencyRole = env.EMERGENCY_ROLE_ADDRESS;
@@ -87,7 +118,7 @@ async function main () {
   console.log(`Network   : ${net.name}  (chain ${chainId})`);
   console.log(`Balance   : ${ethers.formatEther(bal)} ${currency}\n`);
 
-  if (isEth) {
+  if (isEth && !isLocal) {
     if (!ethers.isAddress(treasury)) throw new Error("TREASURY_ADDRESS missing / invalid");
 
     const Token = await ethers.getContractFactory("MoonShotMAGAX");
@@ -114,17 +145,35 @@ async function main () {
 
   if (!ethers.isAddress(recorder)) throw new Error("RECORDER_ADDRESS missing / invalid");
   if (!ethers.isAddress(stageManager)) throw new Error("STAGE_MANAGER_ADDRESS missing / invalid");
-  if (!ethers.isAddress(admin)) throw new Error("ADMIN_ADDRESS missing / invalid (must be timelock)");
+  if (!ethers.isAddress(admin)) throw new Error("ADMIN_ADDRESS missing / invalid (must be timelock / deployer for local)");
 
   const Presale = await ethers.getContractFactory("MAGAXPresaleReceipts");
   const presale = await deployWithPrettyGas("MAGAXPresaleReceipts", Presale, [recorder, stageManager, admin], { gasLimit: 4_000_000 });
 
-  await setupRoles(presale, emergencyRole, finalizerRole, deployer);
-  await configureStage1(presale);
-  
-  // Note: Deployer no longer has admin role - only timelock does
-  console.log("⚠️  Only timelock has admin privileges. Stage activation must be done through timelock.");
-  console.log("Stage 1 has been configured but not activated. Use timelock to activate when ready.");
+  // Attempt optional role setup only if deployer has admin role (not true when admin=timelock)
+  const hasAdmin = await hasDeployerAdmin(presale, deployer.address);
+  if (hasAdmin) {
+    await setupRoles(presale, emergencyRole, finalizerRole, deployer);
+  } else {
+    console.log("Deployer lacks admin role (expected: ADMIN_ADDRESS is timelock). Skipping grantRole calls to avoid revert.\n");
+  }
+
+  // Configure stage 1 only if deployer is the stage manager (local workflow)
+  const hasStageManager = await hasDeployerStageManager(presale, deployer.address);
+  let stage1Configured = false;
+  if (hasStageManager) {
+    await configureStage1(presale);
+    stage1Configured = true;
+  } else {
+    console.log("Deployer is not STAGE_MANAGER → Stage 1 not auto-configured. Use stage manager account / timelock to configure & activate.\n");
+  }
+
+  console.log("⚠️  Governance: Only timelock (admin) can grant/revoke roles or change critical params.");
+  if (stage1Configured) {
+    console.log("Stage 1 configured locally but NOT activated (activation still required via stage manager / timelock).");
+  } else {
+    console.log("Stage 1 not configured yet. First action should be configureStage(1,...) via STAGE_MANAGER_ROLE then activateStage(1).");
+  }
 
   await dumpPresaleInfo(presale);
   
@@ -186,12 +235,30 @@ async function setupRoles (presale, emergencyRole, finalizerRole, deployer) {
 
 async function configureStage1 (presale) {
   console.log("\nConfiguring Stage 1 …");
-  // Stage 1: $0.000270 per token, 200,000,000 tokens allocation
   const stage1 = STAGES.find(cfg => cfg.stage === 1);
   const price = ethers.parseUnits(stage1.price, 6);
-  const alloc = ethers.parseUnits(stage1.tokens, 18);
-  await presale.configureStage(1, price, alloc);
-  console.log(`Stage 1 configured @ $${stage1.price} with ${stage1.tokens} tokens\n`);
+  const usdTarget = ethers.parseUnits("54000", 6); // 54,000 USDT target
+  
+  // Calculate allocation with headroom for referral + promo bonuses + safety margin
+  const maxBonusBps = REF_BPS + REFEREE_BPS + MAX_PROMO_BPS; // 7% + 5% + 20% = 32%
+  const alloc = tokensAlloc18WithHeadroom(usdTarget, price, maxBonusBps, SAFETY_BPS);
+  
+  await presale.configureStage(1, price, alloc, usdTarget);
+  console.log(`Stage 1 configured @ $${stage1.price} with ${ethers.formatUnits(alloc, 18)} tokens (usdTarget=54,000 USDT, headroom=${(maxBonusBps + SAFETY_BPS)/100}%)\n`);
+}
+
+async function hasDeployerAdmin(presale, deployerAddr) {
+  try {
+    const ADMIN = await presale.DEFAULT_ADMIN_ROLE();
+    return await presale.hasRole(ADMIN, deployerAddr);
+  } catch (_) { return false; }
+}
+
+async function hasDeployerStageManager(presale, deployerAddr) {
+  try {
+    const ROLE = await presale.STAGE_MANAGER_ROLE();
+    return await presale.hasRole(ROLE, deployerAddr);
+  } catch (_) { return false; }
 }
 
 async function dumpTokenInfo (token, treasury) {

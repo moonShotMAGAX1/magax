@@ -25,6 +25,11 @@ error SelfReferral();
 error PresaleFinalised();
 error PriceMismatch();
 error InvalidPromoBps();
+error InvalidUsdTarget();
+error PresaleTokenCapExceeded();
+error StageUsdOverTarget();
+error StageAlreadyUsed();
+error InvalidAllocation();
 
 contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -62,7 +67,9 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     struct StageInfo {
         uint128 pricePerToken;    // USDT per MAGAX (6 decimals)
         uint128 tokensAllocated;  // Total MAGAX tokens for this stage
-        uint128 tokensSold;       // MAGAX tokens sold in this stage
+        uint128 tokensSold;       // MAGAX tokens sold in this stage (incl bonuses)
+        uint128 usdTarget;        // 6-dec USDT target for this stage
+        uint128 usdRaised;        // 6-dec base USDT raised (excludes bonuses)
         bool isActive;            // Whether stage is currently active
     }
 
@@ -100,6 +107,11 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     uint128 public totalUSDT;
     uint128 public totalMAGAX;
     uint32 public totalBuyers;   // Track unique buyers
+    // Global cumulative promo bonuses distributed (sum of all promoBonus values)
+    uint128 public totalPromoBonusDistributed;
+
+    // Global presale hard token cap (example: 100B * 1e18 = 10% of 1T)
+    uint256 public constant PRESALE_TOKEN_CAP = 100_000_000_000 * 1e18;
 
     event PurchaseRecorded(
         address indexed buyer,
@@ -109,6 +121,20 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint8   indexed stage,
         uint256 totalUserPurchases,
         bool isNewBuyer
+    );
+
+    // Canonical purchase event for unified off-chain indexing
+    event PurchaseRecordedV2(
+        address indexed buyer,
+        uint8   stage,               
+        uint256 usd6d,               // USDT amount in 6 decimals
+        uint256 price6d,             // stage price in 6 decimals
+        uint256 baseTokens18,        // floor(usd6d * 1e18 / price6d)
+        uint256 promoBonus18,        // floor(baseTokens18 * promoBps / 10_000)
+        uint256 refereeBonus18,      // floor(baseTokens18 * 5 / 100)
+        uint256 referrerBonus18,     // floor(baseTokens18 * 7 / 100)
+        address referrer,            // zero address if none / invalid
+        bytes32 orderId              
     );
 
     event ReferralBonusAwarded(
@@ -132,15 +158,12 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint256 receiptIndex
     );
 
-    event StageConfigured(
-        uint8 indexed stage,
-        uint128 pricePerToken,
-        uint128 tokensAllocated
-    );
+    event StageConfigured(uint8 indexed stage, uint128 pricePerToken, uint128 tokensAllocated, uint128 usdTarget);
 
     event StageActivated(uint8 indexed stage, address indexed operator);
     event StageDeactivated(uint8 indexed stage);
     event StageCompleted(uint8 indexed stage, uint128 tokensSold);
+    event StageUSDProgress(uint8 indexed stage, uint128 usdRaised, uint128 usdTarget);
 
     event Finalised(uint40 time);
 
@@ -198,7 +221,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     function recordPurchase(
         address buyer,
         uint128 usdtAmount,
-        uint128 magaxAmount
+        uint128 magaxAmount,
+        bytes32 orderId
     ) external whenNotPaused onlyRole(RECORDER_ROLE) nonReentrant {
         if (finalised) revert PresaleFinalised();
         
@@ -210,7 +234,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         _validatePrice(usdtAmount, magaxAmount, stageInfo.pricePerToken);
         
         uint40 timestamp = uint40(block.timestamp);
-        _processPurchase(buyer, usdtAmount, magaxAmount, stage, stageInfo, timestamp);
+        _processPurchase(buyer, usdtAmount, magaxAmount, stage, stageInfo, timestamp, orderId);
     }
 
     function _validatePurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount) internal view {
@@ -225,7 +249,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     function _validateStage(uint8 stage, uint128 magaxAmount, StageInfo storage stageInfo) internal view {
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
         if (!stageInfo.isActive) revert StageNotActive();
-        if (stageInfo.tokensSold + magaxAmount > stageInfo.tokensAllocated) {
+        if (stageInfo.tokensAllocated > 0 && stageInfo.tokensSold + magaxAmount > stageInfo.tokensAllocated) {
             revert InsufficientStageTokens();
         }
     }
@@ -260,26 +284,50 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 magaxAmount,
         uint8 stage,
         StageInfo storage stageInfo,
-        uint40 timestamp
+        uint40 timestamp,
+        bytes32 orderId
     ) internal {
         // Auditor recommendation: standardize new buyer detection using receipt existence
         bool isNewBuyer = userReceipts[buyer].length == 0;
-        
-        userReceipts[buyer].push(
-            Receipt(usdtAmount, magaxAmount, timestamp, stage, false)
-        );
-        
+        // Pre-check global cap & USD target BEFORE any state mutation
+        if (uint256(totalMAGAX) + uint256(magaxAmount) > PRESALE_TOKEN_CAP) revert PresaleTokenCapExceeded();
+        if (stageInfo.usdTarget > 0) {
+            uint256 afterUsdPre = uint256(stageInfo.usdRaised) + uint256(usdtAmount);
+            if (afterUsdPre > uint256(stageInfo.usdTarget) && afterUsdPre - uint256(stageInfo.usdTarget) > 1e6) {
+                revert StageUsdOverTarget();
+            }
+        }
+
+        userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
+
+        uint128 prevUsd = stageInfo.usdRaised; // for threshold crossing detection
         _updateTotals(buyer, usdtAmount, magaxAmount, isNewBuyer);
-        
+        uint128 prevSold = stageInfo.tokensSold;
         unchecked {
+            stageInfo.usdRaised += usdtAmount; // base USDT only
             stageInfo.tokensSold += magaxAmount;
         }
-        
+
         _emitPurchaseEvent(buyer, usdtAmount, magaxAmount, timestamp, stage, isNewBuyer);
-        
-        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
-            emit StageCompleted(stage, stageInfo.tokensSold);
-        }
+        // Emit canonical unified purchase event (simple purchase => no bonuses)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            0,
+            0,
+            0,
+            address(0),
+            orderId
+        );
+        emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
+
+        bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
+        bool hitCap = (stageInfo.tokensAllocated > 0 && prevSold < stageInfo.tokensAllocated && stageInfo.tokensSold >= stageInfo.tokensAllocated);
+        if (hitUsd || hitCap) emit StageCompleted(stage, stageInfo.tokensSold);
     }
 
     function _updateTotals(address buyer, uint128 usdtAmount, uint128 magaxAmount, bool isNewBuyer) internal {
@@ -318,7 +366,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address buyer,
         uint128 usdtAmount,
         uint128 magaxAmount,
-        address referrer
+        address referrer,
+        bytes32 orderId
     ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
         if (finalised) revert PresaleFinalised();
         
@@ -335,12 +384,12 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         
         (uint128 referrerBonus, uint128 refereeBonus, uint128 totalTokens) = _calculateBonuses(magaxAmount);
         
-        if (stageInfo.tokensSold + totalTokens > stageInfo.tokensAllocated) {
+        if (stageInfo.tokensAllocated > 0 && stageInfo.tokensSold + totalTokens > stageInfo.tokensAllocated) {
             revert InsufficientStageTokens();
         }
         
         uint40 timestamp = uint40(block.timestamp);
-        _processReferralPurchase(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokens, stage, stageInfo, timestamp);
+        _processReferralPurchase(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokens, stage, stageInfo, timestamp, orderId);
     }
 
     function _validateReferralPurchase(address buyer, uint128 usdtAmount, uint128 magaxAmount, address referrer) internal view {
@@ -370,33 +419,52 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 totalTokensRequired,
         uint8 stage,
         StageInfo storage stageInfo,
-        uint40 timestamp
+        uint40 timestamp,
+        bytes32 orderId
     ) internal {
         _setReferrerIfNeeded(buyer, referrer);
         
         bool isNewBuyer = userReceipts[buyer].length == 0;
-        
-        // Record main purchase receipt for buyer
+        // Pre-check global cap & USD target BEFORE any state mutation
+        if (uint256(totalMAGAX) + uint256(totalTokensRequired) > PRESALE_TOKEN_CAP) revert PresaleTokenCapExceeded();
+        if (stageInfo.usdTarget > 0) {
+            uint256 afterUsdPre = uint256(stageInfo.usdRaised) + uint256(usdtAmount);
+            if (afterUsdPre > uint256(stageInfo.usdTarget) && afterUsdPre - uint256(stageInfo.usdTarget) > 1e6) {
+                revert StageUsdOverTarget();
+            }
+        }
+
+        // Record receipts after validations
         userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
-        
-        // Record referee bonus receipt for buyer (5% bonus)
         userReceipts[buyer].push(Receipt(0, refereeBonus, timestamp, stage, true));
-        
-        // Record referral bonus receipt for referrer (7% bonus)
         userReceipts[referrer].push(Receipt(0, referrerBonus, timestamp, stage, true));
-        
-        // Update totals
+
+        uint128 prevUsd = stageInfo.usdRaised;
         _updateReferralTotals(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, totalTokensRequired, isNewBuyer);
-        
+        uint128 prevSold = stageInfo.tokensSold;
         unchecked {
+            stageInfo.usdRaised += usdtAmount;
             stageInfo.tokensSold += totalTokensRequired;
         }
-        
         _emitReferralEvents(buyer, usdtAmount, magaxAmount, referrer, referrerBonus, refereeBonus, timestamp, stage, isNewBuyer);
-        
-        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
-            emit StageCompleted(stage, stageInfo.tokensSold);
-        }
+        // Emit canonical unified purchase event (referral only)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            0,
+            uint256(refereeBonus),
+            uint256(referrerBonus),
+            referrer,
+            orderId
+        );
+        emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
+        bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
+        bool hitCap = (stageInfo.tokensAllocated > 0 && prevSold < stageInfo.tokensAllocated && stageInfo.tokensSold >= stageInfo.tokensAllocated);
+        if (hitUsd || hitCap) emit StageCompleted(stage, stageInfo.tokensSold);
     }
 
     function _setReferrerIfNeeded(address buyer, address referrer) internal {
@@ -510,20 +578,24 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     function configureStage(
         uint8 stage,
         uint128 pricePerToken,
-        uint128 tokensAllocated
+        uint128 tokensAllocated,
+        uint128 usdTarget
     ) external onlyRole(STAGE_MANAGER_ROLE) {
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
         if (pricePerToken == 0) revert InvalidPrice();
-        if (tokensAllocated == 0) revert InvalidAmount();
-        
+        if (usdTarget == 0) revert InvalidUsdTarget();
+        if (tokensAllocated == 0) revert InvalidAllocation();
+        if (stages[stage].usdRaised > 0 || stages[stage].tokensSold > 0) revert StageAlreadyUsed();
         stages[stage] = StageInfo({
             pricePerToken: pricePerToken,
             tokensAllocated: tokensAllocated,
             tokensSold: 0,
+            usdTarget: usdTarget,
+            usdRaised: 0,
             isActive: false
         });
-        
-        emit StageConfigured(stage, pricePerToken, tokensAllocated);
+        emit StageConfigured(stage, pricePerToken, tokensAllocated, usdTarget);
+        emit StageUSDProgress(stage, 0, usdTarget);
     }
 
     /**
@@ -535,13 +607,15 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
     function activateStage(uint8 stage) external onlyRole(STAGE_MANAGER_ROLE) {
         if (finalised) revert PresaleFinalised();
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
-        if (stages[stage].tokensAllocated == 0) revert InvalidAmount();
+        if (stages[stage].pricePerToken == 0) revert InvalidPrice();
+        if (stages[stage].usdTarget == 0) revert InvalidUsdTarget();
+        if (stages[stage].tokensAllocated == 0) revert InvalidAllocation();
         
         // Check if stage is already active
         if (stages[stage].isActive) revert StageAlreadyActive();
         
         // Deactivate current stage
-        if (currentStage > 0 && currentStage <= MAX_STAGES) {
+        if (currentStage > 0 && currentStage <= MAX_STAGES && stages[currentStage].isActive) {
             stages[currentStage].isActive = false;
             emit StageDeactivated(currentStage);
         }
@@ -556,7 +630,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 pricePerToken,
         uint128 tokensAllocated,
         uint128 tokensSold,
-        uint128 tokensRemaining,
+        uint128 usdTarget,
+        uint128 usdRaised,
         bool isActive
     ) {
         if (stage == 0 || stage > MAX_STAGES) revert InvalidStage();
@@ -566,7 +641,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
             stageInfo.pricePerToken,
             stageInfo.tokensAllocated,
             stageInfo.tokensSold,
-            stageInfo.tokensAllocated - stageInfo.tokensSold,
+            stageInfo.usdTarget,
+            stageInfo.usdRaised,
             stageInfo.isActive
         );
     }
@@ -576,7 +652,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 pricePerToken,
         uint128 tokensAllocated,
         uint128 tokensSold,
-        uint128 tokensRemaining,
+        uint128 usdTarget,
+        uint128 usdRaised,
         bool isActive
     ) {
         return (
@@ -584,7 +661,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
             stages[currentStage].pricePerToken,
             stages[currentStage].tokensAllocated,
             stages[currentStage].tokensSold,
-            stages[currentStage].tokensAllocated - stages[currentStage].tokensSold,
+            stages[currentStage].usdTarget,
+            stages[currentStage].usdRaised,
             stages[currentStage].isActive
         );
     }
@@ -612,6 +690,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         
         emit MaxPromoBpsUpdated(oldCap, newCap, msg.sender);
     }
+
 
     /**
      * @notice Emergency token withdrawal for accidentally sent tokens
@@ -670,7 +749,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address buyer,
         uint128 usdtAmount,
         uint128 magaxAmount,
-        uint16 promoBps
+        uint16 promoBps,
+        bytes32 orderId
     ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
         if (finalised) revert PresaleFinalised();
         
@@ -686,12 +766,12 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 totalTokens = magaxAmount + promoBonus;
         
         // Check if stage has enough tokens for purchase + bonus
-        if (stageInfo.tokensSold + totalTokens > stageInfo.tokensAllocated) {
+        if (stageInfo.tokensAllocated > 0 && stageInfo.tokensSold + totalTokens > stageInfo.tokensAllocated) {
             revert InsufficientStageTokens();
         }
         
         uint40 timestamp = uint40(block.timestamp);
-        _processPromoLaunch(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, totalTokens, stage, stageInfo, timestamp);
+        _processPromoLaunch(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, totalTokens, stage, stageInfo, timestamp, orderId);
     }
 
     /**
@@ -710,7 +790,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 usdtAmount,
         uint128 magaxAmount,
         uint16  promoBps,
-        address referrer
+        address referrer,
+        bytes32 orderId
     ) external onlyRole(RECORDER_ROLE) whenNotPaused nonReentrant {
         if (finalised) revert PresaleFinalised();
 
@@ -726,7 +807,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
 
         _processPromoAndReferralPurchase(
             buyer, usdtAmount, magaxAmount, promoBps, referrer,
-            uint40(block.timestamp), stage, stageInfo
+            uint40(block.timestamp), stage, stageInfo, orderId
         );
     }
 
@@ -748,31 +829,51 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 totalTokens,
         uint8 stage,
         StageInfo storage stageInfo,
-        uint40 timestamp
+        uint40 timestamp,
+        bytes32 orderId
     ) internal {
         // Auditor recommendation: use receipt count for new buyer detection
         bool isNewBuyer = userReceipts[buyer].length == 0;
-        
-        // Record main purchase receipt
+        // Pre-check global cap & USD target BEFORE any state mutation
+        if (uint256(totalMAGAX) + uint256(totalTokens) > PRESALE_TOKEN_CAP) revert PresaleTokenCapExceeded();
+        if (stageInfo.usdTarget > 0) {
+            uint256 afterUsdPre = uint256(stageInfo.usdRaised) + uint256(usdtAmount);
+            if (afterUsdPre > uint256(stageInfo.usdTarget) && afterUsdPre - uint256(stageInfo.usdTarget) > 1e6) {
+                revert StageUsdOverTarget();
+            }
+        }
+
+        // Record receipts post-validation
         userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
-        
-        // Record promo bonus receipt and keep its index
         userReceipts[buyer].push(Receipt(0, promoBonus, timestamp, stage, true));
         uint256 bonusReceiptIdx = userReceipts[buyer].length - 1;
-        
-        // Update totals
+
+        uint128 prevUsd = stageInfo.usdRaised;
         _updatePromoTotals(buyer, usdtAmount, promoBonus, totalTokens, isNewBuyer);
-        
-        // Update stage tokens sold
+        uint128 prevSold = stageInfo.tokensSold;
         unchecked {
+            stageInfo.usdRaised += usdtAmount;
             stageInfo.tokensSold += totalTokens;
         }
-        
         _emitPromoEvents(buyer, usdtAmount, magaxAmount, promoBps, promoBonus, timestamp, stage, isNewBuyer, bonusReceiptIdx);
-        
-        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
-            emit StageCompleted(stage, stageInfo.tokensSold);
-        }
+        // Emit canonical unified purchase event (promo only)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            uint256(promoBonus),
+            0,
+            0,
+            address(0),
+            orderId
+        );
+        emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
+        bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
+        bool hitCap = (stageInfo.tokensAllocated > 0 && prevSold < stageInfo.tokensAllocated && stageInfo.tokensSold >= stageInfo.tokensAllocated);
+        if (hitUsd || hitCap) emit StageCompleted(stage, stageInfo.tokensSold);
     }
 
     function _updatePromoTotals(
@@ -785,6 +886,7 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         userTotalUSDT[buyer] += usdtAmount;
         userTotalMAGAX[buyer] += totalTokens; // Include bonus in user's total
         userPromoData[buyer].totalPromoBonus += promoBonus;
+        totalPromoBonusDistributed += promoBonus; // track global promo distribution
         
         totalUSDT += usdtAmount;
         totalMAGAX += totalTokens;
@@ -819,7 +921,8 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         address referrer,
         uint40  timestamp,
         uint8   stage,
-        StageInfo storage stageInfo
+        StageInfo storage stageInfo,
+        bytes32 orderId
     ) internal {
         _setReferrerIfNeeded(buyer, referrer);
 
@@ -830,12 +933,21 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         uint128 totalBuyerTokens = magaxAmount + promoBonus + refereeBonus;
         uint128 totalStageTokens = totalBuyerTokens + referrerBonus;
 
-        if (stageInfo.tokensSold + totalStageTokens > stageInfo.tokensAllocated) {
+        if (stageInfo.tokensAllocated > 0 && stageInfo.tokensSold + totalStageTokens > stageInfo.tokensAllocated) {
             revert InsufficientStageTokens();
         }
 
         // Auditor recommendation: use receipt existence instead of USDT total
         bool isNewBuyer = userReceipts[buyer].length == 0;
+
+        // Pre-check global cap & USD target BEFORE any state mutation
+        if (uint256(totalMAGAX) + uint256(totalStageTokens) > PRESALE_TOKEN_CAP) revert PresaleTokenCapExceeded();
+        if (stageInfo.usdTarget > 0) {
+            uint256 afterUsdPre = uint256(stageInfo.usdRaised) + uint256(usdtAmount);
+            if (afterUsdPre > uint256(stageInfo.usdTarget) && afterUsdPre - uint256(stageInfo.usdTarget) > 1e6) {
+                revert StageUsdOverTarget();
+            }
+        }
 
         // receipts (main, promo, referee; referrer gets separate receipt)
         userReceipts[buyer].push(Receipt(usdtAmount, magaxAmount, timestamp, stage, false));
@@ -843,11 +955,12 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         userReceipts[buyer].push(Receipt(0, refereeBonus, timestamp, stage, true));
         userReceipts[referrer].push(Receipt(0, referrerBonus, timestamp, stage, true));
 
-        // totals
+        // totals (after validation)
         userTotalUSDT[buyer]  += usdtAmount;
         userTotalMAGAX[buyer] += totalBuyerTokens;
         userTotalMAGAX[referrer] += referrerBonus;
         userPromoData[buyer].totalPromoBonus += promoBonus;
+        totalPromoBonusDistributed += promoBonus; // track global promo distribution
 
         unchecked { referralData[referrer].totalReferrals++; }
         referralData[referrer].totalBonusEarned += referrerBonus;
@@ -857,16 +970,38 @@ contract MAGAXPresaleReceipts is AccessControl, Pausable, ReentrancyGuard {
         totalMAGAX += totalStageTokens;
         if (isNewBuyer) { unchecked { totalBuyers++; } }
 
-        unchecked { stageInfo.tokensSold += totalStageTokens; }
-
+        uint128 prevUsd = stageInfo.usdRaised;
+        uint128 prevSold = stageInfo.tokensSold;
+        unchecked {
+            stageInfo.usdRaised += usdtAmount;
+            stageInfo.tokensSold += totalStageTokens;
+        }
         // events (promo receipt index is length-2 after the three pushes)
         emit PurchaseRecorded(buyer, usdtAmount, magaxAmount, timestamp, stage, userReceipts[buyer].length, isNewBuyer);
         emit PromoUsed(buyer, promoBps, promoBonus, stage, userReceipts[buyer].length - 2);
         emit ReferralBonusAwarded(referrer, buyer, referrerBonus, refereeBonus, stage);
-
-        if (stageInfo.tokensSold == stageInfo.tokensAllocated) {
-            emit StageCompleted(stage, stageInfo.tokensSold);
-        }
+        // Emit canonical unified purchase event (promo + referral)
+        uint256 canonicalBase18 = (uint256(usdtAmount) * 1e18) / uint256(stageInfo.pricePerToken);
+        emit PurchaseRecordedV2(
+            buyer,
+            stage,
+            uint256(usdtAmount),
+            uint256(stageInfo.pricePerToken),
+            canonicalBase18,
+            uint256(promoBonus),
+            uint256(refereeBonus),
+            uint256(referrerBonus),
+            referrer,
+            orderId
+        );
+        emit StageUSDProgress(stage, stageInfo.usdRaised, stageInfo.usdTarget);
+        bool hitUsd = _crossed(prevUsd, stageInfo.usdRaised, stageInfo.usdTarget);
+        bool hitCap = (stageInfo.tokensAllocated > 0 && prevSold < stageInfo.tokensAllocated && stageInfo.tokensSold >= stageInfo.tokensAllocated);
+        if (hitUsd || hitCap) emit StageCompleted(stage, stageInfo.tokensSold);
+    }
+    // helper to detect first crossing of usdTarget
+    function _crossed(uint128 before, uint128 after_, uint128 target) private pure returns (bool) {
+        return target > 0 && before < target && after_ >= target;
     }
 
 
